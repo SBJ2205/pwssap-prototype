@@ -74,7 +74,13 @@ SUBJECT_SLOTS = {
 
 SLOT_SUBJECT = {slot["id"]: slot["code"] for slot in SLOT_INSTANCES}
 
-FACULTY_LIST = sorted({slot["faculty"] for slot in SLOT_INSTANCES})
+# Distinct faculty teaching each subject, e.g. {"IT301": ["Dr. Sharma", "Prof. Mehta"]}.
+# A subject taught by only ONE faculty (e.g. IT304, both sections Prof. Rao) has no
+# real choice to rank, so the UI/solver treat it as having no faculty preference.
+FACULTY_BY_SUBJECT: Dict[str, List[str]] = {
+    subj: sorted({SLOT_INSTANCES[sid]["faculty"] for sid in slot_ids})
+    for subj, slot_ids in SUBJECT_SLOTS.items()
+}
 
 # ── Abstract time-slot grid: 6 days × 4 periods ───────────────────────────────
 # These are the canonical periods students rate — they do NOT know what subject
@@ -122,9 +128,15 @@ def slot_time_penalty(slot: dict, ts_prefs: Dict[str, int]) -> int:
     a twice-weekly lecture in a disliked period costs the student twice."""
     return sum(PENALTY.get(ts_prefs.get(k, 1), 0) for k in slot_time_keys(slot))
 
-def slot_faculty_penalty(slot: dict, faculty_prefs: Dict[str, int], faculty_weight: int) -> (int, int):
-    """Returns (faculty_rating, weighted_penalty) for a section."""
-    rating = faculty_prefs.get(slot["faculty"], 1)
+def slot_faculty_penalty(slot: dict, faculty_prefs: Dict[str, Dict[str, int]], faculty_weight: int) -> (int, int):
+    """Returns (faculty_rating, weighted_penalty) for a section.
+    faculty_prefs is keyed subject-first: {subject_code: {faculty_name: rating}}.
+    A student's ranking of a faculty member is specific to the subject they
+    teach it under (a professor could be someone's favourite for one subject
+    and irrelevant for another). Subjects taught by only one faculty member
+    have nothing to rank, so a missing entry there simply defaults to 0 penalty."""
+    subj_prefs = faculty_prefs.get(slot["code"], {})
+    rating = subj_prefs.get(slot["faculty"], 1)
     return rating, faculty_weight * PENALTY.get(rating, 0)
 
 # Default time-slot preferences for each student
@@ -144,19 +156,32 @@ DEFAULT_TS_PREFS: Dict[int, Dict[str, int]] = {
         "Fri|10:00": 1, "Fri|14:00": 1},
 }
 
-# Default faculty preferences for each student: {faculty_name: rating 1-3}.
+# Default faculty preferences for each student, ranked PER SUBJECT:
+# {subject_code: {faculty_name: rating 1-3}}. IT304 is taught by a single
+# faculty (Prof. Rao) across both its sections, so there's no real choice to
+# rank and it is intentionally omitted from every student's defaults.
 # Unlike time slots, faculty ratings have no "blocked" option (4) — the
 # spec treats faculty mismatch as a soft secondary penalty term only.
-DEFAULT_FACULTY_PREFS: Dict[int, Dict[str, int]] = {
-    0: {"Dr. Sharma": 1, "Prof. Rao": 2},
-    1: {"Prof. Mehta": 1, "Dr. Nair": 3},
-    2: {"Dr. Verma": 2, "Prof. Joshi": 1},
-    3: {"Prof. Kulkarni": 3, "Prof. Rao": 1},
+DEFAULT_FACULTY_PREFS: Dict[int, Dict[str, Dict[str, int]]] = {
+    0: {"IT301": {"Dr. Sharma": 1, "Prof. Mehta": 2},
+        "IT302": {"Prof. Joshi": 1, "Dr. Nair": 2},
+        "IT303": {"Dr. Verma": 1, "Prof. Kulkarni": 2}},
+    1: {"IT301": {"Prof. Mehta": 1, "Dr. Sharma": 3},
+        "IT302": {"Dr. Nair": 3, "Prof. Joshi": 1},
+        "IT303": {"Prof. Kulkarni": 1, "Dr. Verma": 2}},
+    2: {"IT301": {"Dr. Sharma": 1, "Prof. Mehta": 1},
+        "IT302": {"Prof. Joshi": 1, "Dr. Nair": 1},
+        "IT303": {"Dr. Verma": 2, "Prof. Kulkarni": 1}},
+    3: {"IT301": {"Prof. Mehta": 2, "Dr. Sharma": 1},
+        "IT302": {"Dr. Nair": 1, "Prof. Joshi": 2},
+        "IT303": {"Prof. Kulkarni": 3, "Dr. Verma": 1}},
 }
 
 # In-memory stores
 student_ts_prefs: Dict[int, Dict[str, int]] = {k: dict(v) for k, v in DEFAULT_TS_PREFS.items()}
-student_faculty_prefs: Dict[int, Dict[str, int]] = {k: dict(v) for k, v in DEFAULT_FACULTY_PREFS.items()}
+student_faculty_prefs: Dict[int, Dict[str, Dict[str, int]]] = {
+    k: {subj: dict(r) for subj, r in v.items()} for k, v in DEFAULT_FACULTY_PREFS.items()
+}
 last_result = {}
 
 # ── Penalty mapping ───────────────────────────────────────────────────────────
@@ -180,9 +205,11 @@ def get_timeslots():
     """Return the canonical time-slot grid (6 days × 4 periods)."""
     return TIME_SLOTS
 
-@app.get("/faculty")
-def get_faculty():
-    return FACULTY_LIST
+@app.get("/faculty-by-subject")
+def get_faculty_by_subject():
+    """Return {subject_code: [faculty_names]} so the UI can build a per-subject
+    ranking form, and skip any subject with only one faculty member."""
+    return FACULTY_BY_SUBJECT
 
 # ── Routes: time-slot preferences ─────────────────────────────────────────────
 
@@ -211,11 +238,11 @@ def save_prefs(student_id: int, payload: PrefsPayload):
 
 @app.get("/faculty-prefs/{student_id}")
 def get_faculty_prefs(student_id: int):
-    """Return the student's faculty preferences as {faculty_name: rating}."""
+    """Return the student's faculty preferences as {subject_code: {faculty_name: rating}}."""
     return student_faculty_prefs.get(student_id, {})
 
 class FacultyPrefsPayload(BaseModel):
-    prefs: Dict[str, int]   # faculty name → rating (1-3)
+    prefs: Dict[str, Dict[str, int]]   # subject_code → {faculty_name → rating (1-3)}
 
 @app.post("/faculty-prefs/{student_id}")
 def save_faculty_prefs(student_id: int, payload: FacultyPrefsPayload):

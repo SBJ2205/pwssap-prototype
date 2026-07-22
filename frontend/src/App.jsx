@@ -29,7 +29,7 @@ export default function App() {
   const [solveProgress, setSolveProgress] = useState(0);
   const [results, setResults] = useState(null);
   const [fairness, setFairness] = useState(12);
-  const [facultyList, setFacultyList] = useState([]);
+  const [facultyBySubject, setFacultyBySubject] = useState({});
   const [facultyPrefs, setFacultyPrefs] = useState({});
   const [facultyWeight, setFacultyWeight] = useState(1);
   const [enableGapReduction, setEnableGapReduction] = useState(true);
@@ -38,7 +38,7 @@ export default function App() {
     axios.get(`${API}/slots`).then(r => setSlots(r.data));
     axios.get(`${API}/students`).then(r => setStudents(r.data));
     axios.get(`${API}/timeslots`).then(r => setTimeslots(r.data));
-    axios.get(`${API}/faculty`).then(r => setFacultyList(r.data));
+    axios.get(`${API}/faculty-by-subject`).then(r => setFacultyBySubject(r.data));
   }, []);
 
   useEffect(() => {
@@ -66,15 +66,18 @@ export default function App() {
       : "Saved with warnings:\n" + r.data.warnings.join("\n"));
   }
 
-  // Faculty ratings cycle 0 (Indifferent) → 3 (Disliked) — no "Blocked" option,
-  // faculty mismatch is always a soft secondary penalty, never a hard block.
-  function cycleFacultyRating(name) {
-    const cur = facultyPrefs[name] ?? 0;
+  // Faculty ratings are PER SUBJECT (a professor's ranking under one subject
+  // is independent of the same professor under another). Cycle 0 (Indifferent)
+  // → 3 (Disliked) — no "Blocked" option, faculty mismatch is always a soft
+  // secondary penalty, never a hard block.
+  function cycleFacultyRating(subjCode, name) {
+    const subjPrefs = facultyPrefs[subjCode] ?? {};
+    const cur = subjPrefs[name] ?? 0;
     const next = cur >= 3 ? 0 : cur + 1;
-    const updated = { ...facultyPrefs };
-    if (next === 0) delete updated[name];
-    else updated[name] = next;
-    setFacultyPrefs(updated);
+    const updatedSubj = { ...subjPrefs };
+    if (next === 0) delete updatedSubj[name];
+    else updatedSubj[name] = next;
+    setFacultyPrefs({ ...facultyPrefs, [subjCode]: updatedSubj });
   }
 
   async function saveFacultyPrefs() {
@@ -157,7 +160,7 @@ export default function App() {
           runSolver={runSolver} setPage={setPage} />}
         {page === "dashboard" && <DashboardPage results={results} students={students} />}
         {page === "prefs" && <PrefsPage students={students} timeslots={timeslots} selStudent={selStudent} setSelStudent={setSelStudent} prefs={prefs} cycleRating={cycleRating} savePrefs={savePrefs} warnings={warnings} />}
-        {page === "facultyprefs" && <FacultyPrefsPage students={students} facultyList={facultyList} selStudent={selStudent} setSelStudent={setSelStudent} facultyPrefs={facultyPrefs} cycleFacultyRating={cycleFacultyRating} saveFacultyPrefs={saveFacultyPrefs} />}
+        {page === "facultyprefs" && <FacultyPrefsPage students={students} slots={slots} facultyBySubject={facultyBySubject} selStudent={selStudent} setSelStudent={setSelStudent} facultyPrefs={facultyPrefs} cycleFacultyRating={cycleFacultyRating} saveFacultyPrefs={saveFacultyPrefs} />}
         {page === "timetable" && <TimetablePage students={students} results={results} selStudent={selStudent} setSelStudent={setSelStudent} />}
       </div>
     </div>
@@ -675,19 +678,31 @@ function PrefsPage({ students, timeslots, selStudent, setSelStudent, prefs, cycl
 }
 
 // ── Page: Faculty Preferences ──────────────────────────────────────────────
-function FacultyPrefsPage({ students, facultyList, selStudent, setSelStudent, facultyPrefs, cycleFacultyRating, saveFacultyPrefs }) {
-  const ratedCount = Object.keys(facultyPrefs).length;
+function FacultyPrefsPage({ students, slots, facultyBySubject, selStudent, setSelStudent, facultyPrefs, cycleFacultyRating, saveFacultyPrefs }) {
+  // Subject code -> display name (e.g. "IT301" -> "Data Structures"), derived from /slots.
+  const subjectNames = {};
+  slots.forEach(s => { subjectNames[s.code] = s.subject; });
+
+  const rankableSubjects = Object.entries(facultyBySubject).filter(([, names]) => names.length > 1);
+  const singleFacultySubjects = Object.entries(facultyBySubject).filter(([, names]) => names.length <= 1);
+
+  const ratedCount = Object.values(facultyPrefs).reduce((sum, subjPrefs) => sum + Object.keys(subjPrefs).length, 0);
+  const rankableSlotCount = rankableSubjects.reduce((sum, [, names]) => sum + names.length, 0);
+
   return (
     <div>
       <PageHeader
         title="Faculty Preferences"
-        sub="Optional secondary ranking — only used to break ties between equally time-convenient sections"
+        sub="Optional secondary ranking, done SUBJECT BY SUBJECT — only used to break ties between equally time-convenient sections"
       />
       <InfoBox title="How does this work?">
-        This is <strong>optional and secondary</strong> to your time-slot preferences. If two sections of the
-        same subject fit your schedule equally well, the solver prefers the section taught by faculty you
-        rated higher. Faculty preference can never override a better time-slot match, and there is no
-        "Blocked" option here — a faculty mismatch costs a small penalty, it never makes a section unavailable.
+        This is <strong>optional and secondary</strong> to your time-slot preferences, and it's rated{" "}
+        <strong>separately for each subject</strong> — e.g. you rank the faculty teaching DBMS independently from
+        the faculty teaching Data Structures. If two sections of the same subject fit your schedule equally
+        well, the solver prefers the one taught by the faculty you ranked higher for THAT subject.
+        Faculty preference can never override a better time-slot match, and there's no "Blocked" option —
+        a mismatch costs a small penalty, it never makes a section unavailable. Subjects taught by only one
+        faculty member have nothing to rank and are listed separately below.
       </InfoBox>
 
       <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 14 }}>
@@ -711,33 +726,53 @@ function FacultyPrefsPage({ students, facultyList, selStudent, setSelStudent, fa
             <div style={{ fontSize: 12, color: "#555", marginBottom: 8 }}>Summary</div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 11, color: "#555" }}>Faculty rated</span>
-              <span style={{ fontSize: 12, fontWeight: 600, background: "#E6F1FB", color: "#0C447C", padding: "1px 8px", borderRadius: 10 }}>{ratedCount} / {facultyList.length}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, background: "#E6F1FB", color: "#0C447C", padding: "1px 8px", borderRadius: 10 }}>{ratedCount} / {rankableSlotCount}</span>
             </div>
           </Card>
         </div>
 
         <div>
-          <Card>
-            <div style={{ fontWeight: 500, marginBottom: 4 }}>Rate each faculty member</div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 14 }}>
-              Click to cycle: Indifferent → Preferred → Tolerable → Disliked → back to Indifferent.
-            </div>
-            {facultyList.map(name => {
-              const rating = facultyPrefs[name] ?? 0;
-              const m = RATING_META[rating];
-              return (
-                <div key={name} onClick={() => cycleFacultyRating(name)}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer",
-                    padding: "10px 14px", marginBottom: 6, borderRadius: 8,
-                    background: m.bg, border: `1.5px solid ${rating > 0 ? m.color : "#e0ddd8"}`,
-                  }}>
-                  <span style={{ fontSize: 13, fontWeight: 500, color: "#333" }}>{name}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: m.color }}>{m.label} {m.pill}</span>
+          {rankableSubjects.map(([code, names]) => {
+            const subjPrefs = facultyPrefs[code] ?? {};
+            return (
+              <Card key={code}>
+                <div style={{ fontWeight: 500, marginBottom: 2 }}>{subjectNames[code] || code}{" "}
+                  <code style={{ fontSize: 11, background: "#f1efe8", padding: "1px 5px", borderRadius: 3 }}>{code}</code>
                 </div>
-              );
-            })}
-          </Card>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+                  Rank the {names.length} faculty teaching this subject. Click to cycle: Indifferent → Preferred → Tolerable → Disliked.
+                </div>
+                {names.map(name => {
+                  const rating = subjPrefs[name] ?? 0;
+                  const m = RATING_META[rating];
+                  return (
+                    <div key={name} onClick={() => cycleFacultyRating(code, name)}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer",
+                        padding: "10px 14px", marginBottom: 6, borderRadius: 8,
+                        background: m.bg, border: `1.5px solid ${rating > 0 ? m.color : "#e0ddd8"}`,
+                      }}>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: "#333" }}>{name}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: m.color }}>{m.label} {m.pill}</span>
+                    </div>
+                  );
+                })}
+              </Card>
+            );
+          })}
+
+          {singleFacultySubjects.length > 0 && (
+            <Card>
+              <div style={{ fontWeight: 500, marginBottom: 4 }}>No ranking needed</div>
+              <div style={{ fontSize: 12, color: "#888" }}>
+                {singleFacultySubjects.map(([code, names]) => (
+                  <div key={code} style={{ marginBottom: 4 }}>
+                    <strong>{subjectNames[code] || code}</strong> is taught by only one faculty member ({names[0] || "—"}) — there's no choice to rank.
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           <button onClick={saveFacultyPrefs}
             style={{
@@ -842,11 +877,11 @@ function TimetablePage({ students, results, selStudent, setSelStudent }) {
                       const e = getEntry(d, t);
                       const bg = e ? PENALTY_BG[e.rating] || "#EAF3DE" : "#f9f8f5";
                       return (
-                        <div key={d} style={{ background: bg, borderRadius: 4, padding: e ? "6px 8px" : "4px", minHeight: 40, border: "0.5px solid #e5e3dc" }}>
+                        <div style={{ background: bg, borderRadius: 4, padding: e ? "6px 8px" : "4px", minHeight: 52, border: "0.5px solid #e5e3dc" }}>
                           {e && <>
-                            <div style={{ fontSize: 10, fontWeight: 600, color: "#333", lineHeight: 1.3 }}>{e.subject.split(' ').slice(0, 2).join(' ')}</div>
-                            <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>{e.faculty.split(' ')[0]}</div>
-                            <div style={{ fontSize: 9, color: "#999" }}>Sec {e.section}</div>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: "#333", lineHeight: 1.3 }}>{e.subject}</div>
+                            <div style={{ fontSize: 9, color: "#666", marginTop: 2, lineHeight: 1.3, wordBreak: "break-word" }}>{e.faculty}</div>
+                            <div style={{ fontSize: 9, color: "#999", marginTop: 1 }}>Sec {e.section}</div>
                           </>}
                         </div>
                       );
