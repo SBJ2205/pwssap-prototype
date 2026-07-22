@@ -29,16 +29,22 @@ export default function App() {
   const [solveProgress, setSolveProgress] = useState(0);
   const [results, setResults] = useState(null);
   const [fairness, setFairness] = useState(12);
+  const [facultyList, setFacultyList] = useState([]);
+  const [facultyPrefs, setFacultyPrefs] = useState({});
+  const [facultyWeight, setFacultyWeight] = useState(1);
+  const [enableGapReduction, setEnableGapReduction] = useState(true);
 
   useEffect(() => {
     axios.get(`${API}/slots`).then(r => setSlots(r.data));
     axios.get(`${API}/students`).then(r => setStudents(r.data));
     axios.get(`${API}/timeslots`).then(r => setTimeslots(r.data));
+    axios.get(`${API}/faculty`).then(r => setFacultyList(r.data));
   }, []);
 
   useEffect(() => {
     if (students.length === 0) return;
     axios.get(`${API}/prefs/${selStudent}`).then(r => setPrefs(r.data));
+    axios.get(`${API}/faculty-prefs/${selStudent}`).then(r => setFacultyPrefs(r.data));
     setWarnings([]);
   }, [selStudent, students]);
 
@@ -60,6 +66,22 @@ export default function App() {
       : "Saved with warnings:\n" + r.data.warnings.join("\n"));
   }
 
+  // Faculty ratings cycle 0 (Indifferent) → 3 (Disliked) — no "Blocked" option,
+  // faculty mismatch is always a soft secondary penalty, never a hard block.
+  function cycleFacultyRating(name) {
+    const cur = facultyPrefs[name] ?? 0;
+    const next = cur >= 3 ? 0 : cur + 1;
+    const updated = { ...facultyPrefs };
+    if (next === 0) delete updated[name];
+    else updated[name] = next;
+    setFacultyPrefs(updated);
+  }
+
+  async function saveFacultyPrefs() {
+    await axios.post(`${API}/faculty-prefs/${selStudent}`, { prefs: facultyPrefs });
+    alert("Faculty preferences saved!");
+  }
+
   async function runSolver() {
     setSolving(true);
     setSolveProgress(0);
@@ -71,7 +93,11 @@ export default function App() {
       setSolveProgress(Math.round(prog));
     }, 150);
     try {
-      const r = await axios.post(`${API}/solve`, { fairness_index: fairness });
+      const r = await axios.post(`${API}/solve`, {
+        fairness_index: fairness,
+        faculty_weight: facultyWeight,
+        enable_gap_reduction: enableGapReduction,
+      });
       clearInterval(interval);
       setSolveProgress(100);
       setResults(r.data);
@@ -88,6 +114,7 @@ export default function App() {
     { key: "solver", label: "Run Solver", color: "#1D9E75", group: "Admin" },
     { key: "dashboard", label: "Dashboard", color: "#D85A30", group: "Admin" },
     { key: "prefs", label: "Submit Preferences", color: "#7F77DD", group: "Student" },
+    { key: "facultyprefs", label: "Faculty Preferences", color: "#C2478D", group: "Student" },
     { key: "timetable", label: "My Timetable", color: "#BA7517", group: "Student" },
   ];
 
@@ -124,9 +151,13 @@ export default function App() {
       {/* Main */}
       <div style={{ flex: 1, overflowY: "auto", padding: "28px 32px" }}>
         {page === "slots" && <SlotsPage slots={slots} />}
-        {page === "solver" && <SolverPage solving={solving} progress={solveProgress} results={results} fairness={fairness} setFairness={setFairness} runSolver={runSolver} setPage={setPage} />}
+        {page === "solver" && <SolverPage solving={solving} progress={solveProgress} results={results} fairness={fairness} setFairness={setFairness}
+          facultyWeight={facultyWeight} setFacultyWeight={setFacultyWeight}
+          enableGapReduction={enableGapReduction} setEnableGapReduction={setEnableGapReduction}
+          runSolver={runSolver} setPage={setPage} />}
         {page === "dashboard" && <DashboardPage results={results} students={students} />}
         {page === "prefs" && <PrefsPage students={students} timeslots={timeslots} selStudent={selStudent} setSelStudent={setSelStudent} prefs={prefs} cycleRating={cycleRating} savePrefs={savePrefs} warnings={warnings} />}
+        {page === "facultyprefs" && <FacultyPrefsPage students={students} facultyList={facultyList} selStudent={selStudent} setSelStudent={setSelStudent} facultyPrefs={facultyPrefs} cycleFacultyRating={cycleFacultyRating} saveFacultyPrefs={saveFacultyPrefs} />}
         {page === "timetable" && <TimetablePage students={students} results={results} selStudent={selStudent} setSelStudent={setSelStudent} />}
       </div>
     </div>
@@ -140,9 +171,10 @@ function SlotsPage({ slots }) {
     <div>
       <PageHeader title="Slot instances" sub="Pre-scheduled section instances for this semester" />
       <InfoBox title="What are slot instances?">
-        Each row below is one <strong>section</strong> of a subject — a specific class with a fixed teacher, room, time, and day.
+        Each row below is one <strong>section</strong> of a subject — a specific class with a fixed teacher and room, meeting at
+        one or more fixed times per week (some sections meet twice a week, e.g. a lecture on Mon + Wed).
         Each subject has multiple sections (A, B, C…). The solver will pick <strong>exactly one section per subject</strong> for
-        every student, based on their time preferences.
+        every student, based on their time preferences — and a student is scheduled into ALL of that section's weekly meetings.
       </InfoBox>
       <MetricsRow items={[
         { val: slots.length, label: "Total instances",
@@ -157,7 +189,7 @@ function SlotsPage({ slots }) {
       <Card>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
-            <tr>{["Subject", "Code", "Section", "Faculty", "Day", "Time", "Room", "Capacity"].map(h => (
+            <tr>{["Subject", "Code", "Section", "Faculty", "Meetings", "Room", "Capacity"].map(h => (
               <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontSize: 11, fontWeight: 500, color: "#888", borderBottom: "1px solid #eee" }}>{h}</th>
             ))}</tr>
           </thead>
@@ -168,8 +200,12 @@ function SlotsPage({ slots }) {
                 <td style={td}><code style={{ fontSize: 11, background: "#f1efe8", padding: "1px 5px", borderRadius: 3 }}>{s.code}</code></td>
                 <td style={td}><Badge color="blue">Sec {s.section}</Badge></td>
                 <td style={td}>{s.faculty}</td>
-                <td style={td}>{s.day}</td>
-                <td style={td}>{s.time}</td>
+                <td style={td}>
+                  {s.meetings.map((m, i) => (
+                    <span key={i} style={{ marginRight: 6, whiteSpace: "nowrap" }}>{m.day} {m.time}{i < s.meetings.length - 1 ? "," : ""}</span>
+                  ))}
+                  {s.meetings.length > 1 && <span style={{ fontSize: 10, color: "#888" }}> ({s.meetings.length}x/week)</span>}
+                </td>
                 <td style={td}>{s.room}</td>
                 <td style={td}>{s.capacity}</td>
               </tr>
@@ -182,7 +218,7 @@ function SlotsPage({ slots }) {
 }
 
 // ── Page: Solver ──────────────────────────────────────────────────────────────
-function SolverPage({ solving, progress, results, fairness, setFairness, runSolver, setPage }) {
+function SolverPage({ solving, progress, results, fairness, setFairness, facultyWeight, setFacultyWeight, enableGapReduction, setEnableGapReduction, runSolver, setPage }) {
   const stages = ["Idle", "Pruning blocked domains...", "Encoding constraints...", "CP-SAT solving...", "Post-processing gaps...", "Optimal solution found!"];
   const stageIdx = solving ? Math.min(Math.floor(progress / 25) + 1, 4) : (results ? 5 : 0);
   return (
@@ -214,6 +250,28 @@ function SolverPage({ solving, progress, results, fairness, setFairness, runSolv
             style={{ width: 80, padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }} />
           <span style={{ fontSize: 12, color: "#888" }}>Each student's accumulated penalty is capped at this number.</span>
         </div>
+
+        <div style={{ marginBottom: 6, fontSize: 13 }}>
+          <b style={{ color: "#222" }}>Faculty Mismatch Weight</b>{" "}
+          <Tooltip text={"How strongly the solver weighs faculty preference vs time-slot preference.\n\nThis is a SECONDARY term — it only breaks ties between sections that are otherwise equally good on time. It can never override a better time-slot match.\n\n0 = ignore faculty preference entirely. 1 = equal weight to time-slot penalty."}>
+            <span style={{ fontSize: 11, color: "#185FA5", cursor: "help", borderBottom: "1px dashed #185FA5" }}>what is this?</span>
+          </Tooltip>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+          <input type="number" value={facultyWeight} min={0} max={5}
+            onChange={e => setFacultyWeight(Number(e.target.value))}
+            style={{ width: 80, padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }} />
+          <span style={{ fontSize: 12, color: "#888" }}>Multiplier applied to the faculty-mismatch penalty term.</span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+          <input type="checkbox" checked={enableGapReduction} onChange={e => setEnableGapReduction(e.target.checked)} id="gapReduction" />
+          <label htmlFor="gapReduction" style={{ fontSize: 13, cursor: "pointer" }}>Enable gap-reduction post-processing pass</label>
+          <Tooltip text={"After the CP-SAT solve finds the optimal assignment, a second heuristic pass looks for idle gaps between a student's classes and tries to shift them to an equally-good (never worse) alternative section that removes the gap."}>
+            <span style={{ fontSize: 11, color: "#185FA5", cursor: "help", borderBottom: "1px dashed #185FA5" }}>what is this?</span>
+          </Tooltip>
+        </div>
+
         <button onClick={runSolver} disabled={solving}
           style={{ padding: "8px 20px", background: solving ? "#aaa" : "#185FA5", color: "#fff", border: "none", borderRadius: 6, cursor: solving ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 500 }}>
           {solving ? "Solving..." : "▶  Run Solver"}
@@ -230,7 +288,11 @@ function SolverPage({ solving, progress, results, fairness, setFairness, runSolv
         </div>
         {results?.status === "OPTIMAL" && (
           <div style={{ marginTop: 12, background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#27500A" }}>
-            ✓ Optimal assignment found — total penalty: <b>{results.total_penalty}</b> · solved in <b>{results.solver_time_ms}ms</b>
+            ✓ Optimal assignment found — total penalty: <b>{results.total_penalty}</b>
+            {results.gap_reduction && results.gap_reduction.swaps_applied > 0 && (
+              <span> (CP-SAT optimum was {results.objective_total_penalty}; gap-reduction made {results.gap_reduction.swaps_applied} swap{results.gap_reduction.swaps_applied > 1 ? "s" : ""}, cutting idle gaps from {results.gap_reduction.total_gaps_before} to {results.gap_reduction.total_gaps_after})</span>
+            )}
+            {" "}· solved in <b>{results.solver_time_ms}ms</b>
             &nbsp;&nbsp;<span style={{ cursor: "pointer", textDecoration: "underline", color: "#185FA5" }} onClick={() => setPage("dashboard")}>View Dashboard →</span>
           </div>
         )}
@@ -305,12 +367,16 @@ function DashboardPage({ results, students }) {
   const total = results.total_penalty;
   const avg = (total / results.assignments.length).toFixed(1);
   const worst = Math.max(...results.assignments.map(a => a.penalty));
+  const fcfs = results.baselines?.fcfs;
+  const random = results.baselines?.random;
+  const facultyPenaltyTotal = results.assignments.reduce(
+    (sum, a) => sum + a.assignments.reduce((s2, x) => s2 + (x.faculty_penalty || 0), 0), 0);
   const baselines = [
     { label: "PWSSAP (ours)", val: total, color: "#1D9E75" },
-    { label: "FCFS baseline", val: total * 2 + 8, color: "#185FA5" },
-    { label: "Random baseline", val: total * 3 + 15, color: "#D85A30" },
+    { label: "FCFS baseline", val: fcfs ? fcfs.total_penalty : 0, color: "#185FA5" },
+    { label: "Random baseline", val: random ? random.total_penalty : 0, color: "#D85A30" },
   ];
-  const maxB = Math.max(...baselines.map(b => b.val));
+  const maxB = Math.max(...baselines.map(b => b.val), 1);
   return (
     <div>
       <PageHeader title="Dashboard" sub="Assignment results and baseline comparison" />
@@ -328,6 +394,8 @@ function DashboardPage({ results, students }) {
           tip: "The highest individual penalty among all students.\nThis is bounded by the Fairness Index you set in the solver." },
         { val: "100%",  label: "Hard constraints",
           tip: "All hard rules (capacity limits, no schedule clashes, one section per subject) are always satisfied 100%.\nThe solver never violates these — it would rather report INFEASIBLE than break them." },
+        { val: facultyPenaltyTotal, label: "Faculty mismatch penalty",
+          tip: "The portion of total penalty coming from the secondary faculty-preference term, rather than time-slot preference.\nThis is always weighted lower priority than time-slot fit." },
       ]} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <Card>
@@ -356,9 +424,11 @@ function DashboardPage({ results, students }) {
             <Badge color="amber">7+ high</Badge>
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr>{["Student", "Roll", "Penalty", "Status"].map(h => <th key={h} style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, color: "#888", borderBottom: "1px solid #eee" }}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Student", "Roll", "Penalty", "Faculty Pen.", "Status"].map(h => <th key={h} style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, color: "#888", borderBottom: "1px solid #eee" }}>{h}</th>)}</tr></thead>
             <tbody>
-              {results.assignments.map(a => (
+              {results.assignments.map(a => {
+                const facPen = a.assignments.reduce((s, x) => s + (x.faculty_penalty || 0), 0);
+                return (
                 <tr key={a.student_id}>
                   <td style={td}>{a.name}</td>
                   <td style={{ ...td, fontFamily: "monospace", fontSize: 11 }}>{a.roll}</td>
@@ -367,13 +437,44 @@ function DashboardPage({ results, students }) {
                       <Badge color={a.penalty <= 3 ? "green" : a.penalty <= 6 ? "blue" : "amber"}>{a.penalty}</Badge>
                     </Tooltip>
                   </td>
+                  <td style={td}>{facPen}</td>
                   <td style={td}><Badge color="green">✓ Assigned</Badge></td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </Card>
       </div>
+
+      {results.gap_reduction && (
+        <Card>
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>Gap-reduction post-processing{" "}
+            <Tooltip text={"After the CP-SAT optimum is found, a second pass looks for idle periods between a student's classes and tries swapping to an alternative section of the SAME subject that removes the gap.\n\nA swap is only applied if it does not increase that student's penalty — so the total penalty can only stay the same or improve, never get worse."}>
+              <span style={{ fontSize: 11, color: "#888", cursor: "help", borderBottom: "1px dashed #bbb" }}>what is this?</span>
+            </Tooltip>
+          </div>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>
+            {results.gap_reduction.swaps_applied} swap{results.gap_reduction.swaps_applied === 1 ? "" : "s"} applied · idle gaps reduced from{" "}
+            <b>{results.gap_reduction.total_gaps_before}</b> to <b>{results.gap_reduction.total_gaps_after}</b> · total penalty unaffected or improved (CP-SAT optimum: {results.objective_total_penalty}, final: {results.total_penalty})
+          </div>
+          {results.gap_reduction.changes.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead><tr>{["Student", "Subject", "From → To Section", "Gaps Before → After"].map(h => <th key={h} style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, color: "#888", borderBottom: "1px solid #eee" }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {results.gap_reduction.changes.map((c, i) => (
+                  <tr key={i}>
+                    <td style={td}>{c.name}</td>
+                    <td style={td}>{c.subject_code}</td>
+                    <td style={td}>Sec {c.from_section} → Sec {c.to_section}</td>
+                    <td style={td}>{c.gap_before} → {c.gap_after}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
@@ -573,7 +674,87 @@ function PrefsPage({ students, timeslots, selStudent, setSelStudent, prefs, cycl
   );
 }
 
-// ── Page: Timetable ───────────────────────────────────────────────────────────
+// ── Page: Faculty Preferences ──────────────────────────────────────────────
+function FacultyPrefsPage({ students, facultyList, selStudent, setSelStudent, facultyPrefs, cycleFacultyRating, saveFacultyPrefs }) {
+  const ratedCount = Object.keys(facultyPrefs).length;
+  return (
+    <div>
+      <PageHeader
+        title="Faculty Preferences"
+        sub="Optional secondary ranking — only used to break ties between equally time-convenient sections"
+      />
+      <InfoBox title="How does this work?">
+        This is <strong>optional and secondary</strong> to your time-slot preferences. If two sections of the
+        same subject fit your schedule equally well, the solver prefers the section taught by faculty you
+        rated higher. Faculty preference can never override a better time-slot match, and there is no
+        "Blocked" option here — a faculty mismatch costs a small penalty, it never makes a section unavailable.
+      </InfoBox>
+
+      <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 14 }}>
+        <div>
+          <Card>
+            <div style={{ fontWeight: 500, marginBottom: 10, fontSize: 13 }}>Students</div>
+            {students.map(s => (
+              <div key={s.id} onClick={() => setSelStudent(s.id)}
+                style={{
+                  padding: "8px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 4,
+                  background: s.id === selStudent ? "#E6F1FB" : "#f9f8f5",
+                  border: s.id === selStudent ? "1px solid #B5D4F4" : "1px solid transparent"
+                }}>
+                <div style={{ fontWeight: 500, fontSize: 13 }}>{s.name}</div>
+                <div style={{ fontSize: 11, color: "#888" }}>{s.roll}</div>
+              </div>
+            ))}
+          </Card>
+
+          <Card>
+            <div style={{ fontSize: 12, color: "#555", marginBottom: 8 }}>Summary</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#555" }}>Faculty rated</span>
+              <span style={{ fontSize: 12, fontWeight: 600, background: "#E6F1FB", color: "#0C447C", padding: "1px 8px", borderRadius: 10 }}>{ratedCount} / {facultyList.length}</span>
+            </div>
+          </Card>
+        </div>
+
+        <div>
+          <Card>
+            <div style={{ fontWeight: 500, marginBottom: 4 }}>Rate each faculty member</div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 14 }}>
+              Click to cycle: Indifferent → Preferred → Tolerable → Disliked → back to Indifferent.
+            </div>
+            {facultyList.map(name => {
+              const rating = facultyPrefs[name] ?? 0;
+              const m = RATING_META[rating];
+              return (
+                <div key={name} onClick={() => cycleFacultyRating(name)}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer",
+                    padding: "10px 14px", marginBottom: 6, borderRadius: 8,
+                    background: m.bg, border: `1.5px solid ${rating > 0 ? m.color : "#e0ddd8"}`,
+                  }}>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: "#333" }}>{name}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: m.color }}>{m.label} {m.pill}</span>
+                </div>
+              );
+            })}
+          </Card>
+
+          <button onClick={saveFacultyPrefs}
+            style={{
+              padding: "10px 28px", background: "#185FA5", color: "#fff",
+              border: "none", borderRadius: 6, cursor: "pointer",
+              fontSize: 13, fontWeight: 600, marginTop: 4,
+              boxShadow: "0 1px 4px rgba(24,95,165,0.25)",
+            }}>
+            Save Faculty Preferences
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Page: Timetable ────────────────────────────────────────────────────────
 function TimetablePage({ students, results, selStudent, setSelStudent }) {
   if (!results || results.status !== "OPTIMAL") {
     return (
@@ -588,7 +769,7 @@ function TimetablePage({ students, results, selStudent, setSelStudent }) {
   const TIMES = ["9:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00"];
 
   function getEntry(day, time) {
-    return studentResult?.assignments.find(a => a.day === day && a.time === time);
+    return studentResult?.assignments.find(a => a.meetings.some(m => m.day === day && m.time === time));
   }
 
   return (

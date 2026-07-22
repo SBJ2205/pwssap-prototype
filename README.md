@@ -10,7 +10,14 @@ Students rate abstract time periods (not specific subjects), and the **OR-Tools 
 - **Blind time-slot preference** — students rate 6 days × 4 periods without knowing which subject falls where
 - **CP-SAT solver** — Google OR-Tools constraint solver with fairness index cap
 - **Penalty scoring** — Preferred = 0 pts · Tolerable = +1 pt · Disliked = +3 pts · Blocked = never assigned
-- **Dashboard** — penalty breakdown, per-student results, comparison against FCFS & random baselines
+- **Multi-meeting sections** — a section can meet more than once a week (e.g. Mon + Wed); all meetings are
+  checked for clashes, capacity, and blocking
+- **Faculty preference (secondary term)** — optional per-faculty ranking that only breaks ties between
+  otherwise time-equivalent sections
+- **Gap-reduction post-processing** — a second heuristic pass after the solver shifts students into
+  alternative sections to remove idle schedule gaps, without ever increasing total penalty
+- **Dashboard** — penalty breakdown, per-student results, comparison against genuinely-simulated FCFS &
+  random baselines (not fabricated multipliers)
 - **Personal timetable** — colour-coded by preference satisfaction
 
 ---
@@ -62,23 +69,29 @@ App available at **http://localhost:5173**
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/slots` | All slot instances (subject × section × time) |
+| `GET` | `/slots` | All slot instances (subject × section × meetings) |
 | `GET` | `/students` | All students |
 | `GET` | `/timeslots` | Canonical 6×4 time-slot grid |
+| `GET` | `/faculty` | List of distinct faculty names |
 | `GET` | `/prefs/{id}` | Get a student's time-slot preferences |
 | `POST` | `/prefs/{id}` | Save a student's time-slot preferences |
-| `POST` | `/solve` | Run the CP-SAT solver |
+| `GET` | `/faculty-prefs/{id}` | Get a student's faculty preferences |
+| `POST` | `/faculty-prefs/{id}` | Save a student's faculty preferences |
+| `POST` | `/solve` | Run the CP-SAT solver (+ gap-reduction pass + baselines) |
 | `GET` | `/results` | Last solver result |
 
 ---
 
 ## 🧠 How the Solver Works
 
-1. **Domain pruning** — blocked slots removed before solving
-2. **Constraint encoding** — capacity limits, no-clash, one section per subject
-3. **Objective** — minimise Σ(penalty) across all students
+1. **Domain pruning** — sections with any blocked meeting are removed before solving
+2. **Constraint encoding** — capacity limits, no-clash (across every meeting of a section), one section per subject
+3. **Objective** — minimise Σ(time-slot penalty + faculty-mismatch penalty) across all students
 4. **Fairness bound** — per-student penalty cap (configurable)
-5. **Gap reduction** — post-processing to minimise idle schedule gaps
+5. **Gap reduction** — post-processing pass that shifts students into alternative sections to remove idle
+   schedule gaps, but only when it does not increase any student's penalty
+6. **Baselines** — independent FCFS and random greedy heuristics are run under the same hard constraints for
+   an honest before/after comparison on the dashboard
 
 ---
 
