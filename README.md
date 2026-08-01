@@ -34,7 +34,11 @@ pwssap-prototype/
 │   └── api/               # FastAPI routers (catalog, preferences, solver_routes)
 └── frontend/         # React (Vite) single-page app
     └── src/
-        └── App.jsx
+        ├── App.jsx         # Orchestrator: state, effects, page routing
+        ├── constants.js    # Shared constants (nav, rating scale, grid labels)
+        ├── api/            # Thin axios-based API client (client.js + one module per resource)
+        ├── components/     # Reusable UI (Sidebar, Card/Tooltip/Badge/loading-error-empty states)
+        └── pages/          # One component per nav page (Slots, Solver, Dashboard, Prefs, ...)
 ```
 
 ---
@@ -66,6 +70,10 @@ npm run dev
 ```
 
 App available at **http://localhost:5173**
+
+The backend URL is environment-based (Vite's `import.meta.env`) instead of hardcoded —
+see `frontend/.env.example`. Copy it to `frontend/.env` and adjust `VITE_API_URL` if your
+backend isn't on `http://localhost:8000`.
 
 ---
 
