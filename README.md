@@ -71,18 +71,29 @@ App available at **http://localhost:5173**
 
 ## 🔌 API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/sections` | All sections (subject × label × teacher × meetings) — concrete timetable data |
-| `GET` | `/students` | All students |
-| `GET` | `/timeslots` | Canonical 6×4 abstract time-slot grid (student-facing) |
-| `GET` | `/faculty-by-subject` | `{subject_code: [{id, name}, ...]}` — faculty teaching each subject |
-| `GET` | `/prefs/{id}` | Get a student's time-slot preferences |
-| `POST` | `/prefs/{id}` | Save a student's time-slot preferences |
-| `GET` | `/faculty-prefs/{id}` | Get a student's faculty preferences |
-| `POST` | `/faculty-prefs/{id}` | Save a student's faculty preferences |
-| `POST` | `/solve` | Run the CP-SAT solver (+ gap-reduction pass + baselines) |
-| `GET` | `/results` | Last solver result |
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `GET` | `/sections` | admin | All sections (subject × label × teacher × meetings) — concrete timetable data |
+| `GET` | `/subjects` | any | Student-safe subject catalog (code/name/department/year only) |
+| `GET` | `/students` | any | All students |
+| `GET` | `/timeslots` | any | Canonical 6×4 abstract time-slot grid (student-facing) |
+| `GET` | `/faculty-by-subject` | any | `{subject_code: [{id, name}, ...]}` — faculty teaching each subject |
+| `GET` | `/prefs/{id}` | any | Get a student's time-slot preferences |
+| `POST` | `/prefs/{id}` | any | Save a student's time-slot preferences |
+| `GET` | `/faculty-prefs/{id}` | any | Get a student's faculty preferences |
+| `POST` | `/faculty-prefs/{id}` | any | Save a student's faculty preferences |
+| `POST` | `/solve` | admin* | Run the CP-SAT solver (+ gap-reduction pass + baselines) |
+| `GET` | `/results` | any | Last solver result |
+| `GET/POST/PUT/DELETE` | `/admin/teachers`, `/admin/subjects`, `/admin/students`, `/admin/sections` | admin | Catalog CRUD backing the store |
+
+\* `/solve` is not yet role-restricted server-side — see Milestone 3.
+
+### Role concept (local prototype only)
+
+There is no real authentication. A caller asserts its role via an `X-Role: admin`
+header (or a `?role=admin` query param). `api/deps.require_admin` enforces this on
+admin-only routes — see `backend/api/deps.py`. The frontend's sidebar has an
+"Admin / Student" toggle that sets this header for all requests.
 
 ---
 

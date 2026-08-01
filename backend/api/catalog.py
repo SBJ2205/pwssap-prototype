@@ -3,6 +3,7 @@ which faculty teach a given subject. No preference or solver-run state here.
 """
 from fastapi import APIRouter, Depends
 
+from api.deps import require_admin
 from data.store import InMemoryStore, get_store
 
 router = APIRouter()
@@ -24,11 +25,22 @@ def _section_to_dict(section, store: InMemoryStore) -> dict:
 
 
 @router.get("/sections")
-def get_sections(store: InMemoryStore = Depends(get_store)):
-    # NOTE: this currently exposes full teacher/time data to any caller.
-    # Milestone 2 adds access control so this concrete timetable stays
-    # hidden from students until after the solver runs.
+def get_sections(store: InMemoryStore = Depends(get_store), _admin: None = Depends(require_admin)):
+    # Admin-only: this is the concrete teacher/room/meeting timetable, which
+    # must stay hidden from students until after the solver runs (they only
+    # ever see the abstract /subjects and /timeslots grids, plus their own
+    # post-solve result).
     return [_section_to_dict(s, store) for s in store.list_sections()]
+
+
+@router.get("/subjects")
+def get_subjects(store: InMemoryStore = Depends(get_store)):
+    """Student-safe subject catalog — code/name/department/year only, no
+    section, teacher, room, or meeting-time data."""
+    return [
+        {"code": s.code, "name": s.name, "department": s.department, "year": s.year}
+        for s in store.list_subjects()
+    ]
 
 
 @router.get("/students")

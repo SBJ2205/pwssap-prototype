@@ -18,8 +18,13 @@ const RATING_META = {
 const PENALTY_BG = { 0: "#EAF3DE", 1: "#E6F1FB", 2: "#FAEEDA", 3: "#FCEBEB" };
 
 export default function App() {
-  const [page, setPage] = useState("slots");
+  // Minimal local-prototype role concept (see backend/api/deps.py). No real
+  // auth — the caller just asserts a role, and the backend enforces it on
+  // admin-only routes (e.g. GET /sections, all /admin/* CRUD).
+  const [role, setRole] = useState(() => localStorage.getItem("pwssap_role") || "admin");
+  const [page, setPage] = useState(() => (role === "student" ? "prefs" : "slots"));
   const [slots, setSlots] = useState([]);
+  const [subjects, setSubjects] = useState([]);
   const [timeslots, setTimeslots] = useState([]);
   const [students, setStudents] = useState([]);
   const [selStudent, setSelStudent] = useState(0);
@@ -35,11 +40,25 @@ export default function App() {
   const [enableGapReduction, setEnableGapReduction] = useState(true);
 
   useEffect(() => {
-    axios.get(`${API}/sections`).then(r => setSlots(r.data));
+    localStorage.setItem("pwssap_role", role);
+    // Every request carries the current role; the backend rejects
+    // admin-only routes for anything other than role=admin.
+    axios.defaults.headers.common["X-Role"] = role;
+  }, [role]);
+
+  useEffect(() => {
+    // /sections is the concrete teacher timetable and is admin-only — a
+    // student caller would get a 403, so don't even ask for it.
+    if (role === "admin") {
+      axios.get(`${API}/sections`).then(r => setSlots(r.data)).catch(() => setSlots([]));
+    } else {
+      setSlots([]);
+    }
+    axios.get(`${API}/subjects`).then(r => setSubjects(r.data));
     axios.get(`${API}/students`).then(r => setStudents(r.data));
     axios.get(`${API}/timeslots`).then(r => setTimeslots(r.data));
     axios.get(`${API}/faculty-by-subject`).then(r => setFacultyBySubject(r.data));
-  }, []);
+  }, [role]);
 
   useEffect(() => {
     if (students.length === 0) return;
@@ -131,7 +150,29 @@ export default function App() {
           <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>Section Assignment System</div>
           <div style={{ fontSize: 11, color: "#bbb", marginTop: 1 }}>VIT Mumbai · IT 2025–26</div>
         </div>
-        {["Admin", "Student"].map(group => (
+        <div style={{ padding: "12px 14px", borderBottom: "1px solid #e5e3dc" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: "#bbb", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Viewing as</div>
+          <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid #e0ddd8" }}>
+            {["admin", "student"].map(r => (
+              <div key={r}
+                onClick={() => {
+                  setRole(r);
+                  if (r === "student" && nav.find(n => n.key === page)?.group === "Admin") {
+                    setPage("prefs");
+                  }
+                }}
+                style={{
+                  flex: 1, textAlign: "center", padding: "5px 0", cursor: "pointer", fontSize: 12,
+                  fontWeight: role === r ? 600 : 400,
+                  background: role === r ? "#185FA5" : "#fff",
+                  color: role === r ? "#fff" : "#666",
+                }}>
+                {r === "admin" ? "Admin" : "Student"}
+              </div>
+            ))}
+          </div>
+        </div>
+        {(role === "admin" ? ["Admin", "Student"] : ["Student"]).map(group => (
           <div key={group}>
             <div style={{ padding: "10px 14px 4px", fontSize: 10, fontWeight: 600, color: "#bbb", textTransform: "uppercase", letterSpacing: "0.06em" }}>{group}</div>
             {nav.filter(n => n.group === group).map(n => (
@@ -154,6 +195,10 @@ export default function App() {
 
       {/* Main */}
       <div style={{ flex: 1, overflowY: "auto", padding: "28px 32px" }}>
+        {role !== "admin" && nav.find(n => n.key === page)?.group === "Admin" && (
+          <Card><div style={{ color: "#791F1F", fontSize: 13 }}>This section is admin-only. Switch to "Admin" in the sidebar to view it.</div></Card>
+        )}
+        {(role === "admin" || nav.find(n => n.key === page)?.group !== "Admin") && <>
         {page === "slots" && <SlotsPage slots={slots} />}
         {page === "solver" && <SolverPage solving={solving} progress={solveProgress} results={results} fairness={fairness} setFairness={setFairness}
           facultyWeight={facultyWeight} setFacultyWeight={setFacultyWeight}
@@ -161,8 +206,9 @@ export default function App() {
           runSolver={runSolver} setPage={setPage} />}
         {page === "dashboard" && <DashboardPage results={results} students={students} />}
         {page === "prefs" && <PrefsPage students={students} timeslots={timeslots} selStudent={selStudent} setSelStudent={setSelStudent} prefs={prefs} cycleRating={cycleRating} savePrefs={savePrefs} warnings={warnings} />}
-        {page === "facultyprefs" && <FacultyPrefsPage students={students} slots={slots} facultyBySubject={facultyBySubject} selStudent={selStudent} setSelStudent={setSelStudent} facultyPrefs={facultyPrefs} cycleFacultyRating={cycleFacultyRating} saveFacultyPrefs={saveFacultyPrefs} />}
+        {page === "facultyprefs" && <FacultyPrefsPage students={students} subjects={subjects} facultyBySubject={facultyBySubject} selStudent={selStudent} setSelStudent={setSelStudent} facultyPrefs={facultyPrefs} cycleFacultyRating={cycleFacultyRating} saveFacultyPrefs={saveFacultyPrefs} />}
         {page === "timetable" && <TimetablePage students={students} results={results} selStudent={selStudent} setSelStudent={setSelStudent} />}
+        </>}
       </div>
     </div>
   );
@@ -679,10 +725,11 @@ function PrefsPage({ students, timeslots, selStudent, setSelStudent, prefs, cycl
 }
 
 // ── Page: Faculty Preferences ──────────────────────────────────────────────
-function FacultyPrefsPage({ students, slots, facultyBySubject, selStudent, setSelStudent, facultyPrefs, cycleFacultyRating, saveFacultyPrefs }) {
-  // Subject code -> display name (e.g. "IT301" -> "Data Structures"), derived from /sections.
+function FacultyPrefsPage({ students, subjects, facultyBySubject, selStudent, setSelStudent, facultyPrefs, cycleFacultyRating, saveFacultyPrefs }) {
+  // Subject code -> display name (e.g. "IT301" -> "Data Structures"), from
+  // the student-safe /subjects catalog (no teacher/room/meeting data).
   const subjectNames = {};
-  slots.forEach(s => { subjectNames[s.code] = s.subject; });
+  subjects.forEach(s => { subjectNames[s.code] = s.name; });
 
   // facultyBySubject is {subject_code: [{id, name}, ...]} — each entry is a teacher.
   const rankableSubjects = Object.entries(facultyBySubject).filter(([, teachers]) => teachers.length > 1);
