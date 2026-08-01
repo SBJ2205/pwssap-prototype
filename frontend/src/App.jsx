@@ -58,6 +58,11 @@ export default function App() {
     axios.get(`${API}/students`).then(r => setStudents(r.data));
     axios.get(`${API}/timeslots`).then(r => setTimeslots(r.data));
     axios.get(`${API}/faculty-by-subject`).then(r => setFacultyBySubject(r.data));
+    // Pick up the last solver run (if any) so results survive a page reload
+    // and are visible to students who weren't present when admin ran it.
+    axios.get(`${API}/results`).then(r => {
+      if (r.data && r.data.status === "OPTIMAL") setResults(r.data);
+    });
   }, [role]);
 
   useEffect(() => {
@@ -126,7 +131,11 @@ export default function App() {
       setResults(r.data);
     } catch (e) {
       clearInterval(interval);
-      alert("Solver error: " + e.message);
+      if (e.response?.status === 403) {
+        alert("Only admin can run the solver. Switch to \"Admin\" in the sidebar first.");
+      } else {
+        alert("Solver error: " + e.message);
+      }
     }
     setSolving(false);
   }
@@ -551,6 +560,8 @@ function PrefsPage({ students, timeslots, selStudent, setSelStudent, prefs, cycl
         ★ <strong>Preferred</strong> (best), ✓ <strong>Tolerable</strong> (ok), ↓ <strong>Disliked</strong> (bad),
         or ✕ <strong>Blocked</strong> (impossible — e.g. you have another commitment).
         The solver will then assign your classes to the time slots you like most.
+        Leaving a slot unrated is fine — it's treated as <strong>Indifferent</strong> (same as Preferred,
+        no penalty), so you can submit with as many or as few ratings as you like.
       </InfoBox>
 
       <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 14 }}>
@@ -751,7 +762,9 @@ function FacultyPrefsPage({ students, subjects, facultyBySubject, selStudent, se
         well, the solver prefers the one taught by the faculty you ranked higher for THAT subject.
         Faculty preference can never override a better time-slot match, and there's no "Blocked" option —
         a mismatch costs a small penalty, it never makes a section unavailable. Subjects taught by only one
-        faculty member have nothing to rank and are listed separately below.
+        faculty member have nothing to rank and are listed separately below. Leaving a faculty member unrated
+        is fine — it's treated as <strong>Indifferent</strong> (no penalty), and you can save with none, some, or
+        all faculty rated.
       </InfoBox>
 
       <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 14 }}>

@@ -1,11 +1,16 @@
-"""Admin-triggered solver run and result retrieval.
+"""Solver run (admin-only) and result retrieval (anyone).
 
-NOTE: there is no admin/student role check yet (see Milestone 2) — anyone
-can currently call /solve. This endpoint is conceptually admin-only.
+Running the solver is an admin action — it operates on the hidden teacher
+timetable and should only happen once the preference window has closed.
+Reading the last result is open to any caller: students need it to see
+their own post-solve timetable (api/catalog.py's /sections stays hidden,
+but the solved assignments themselves are the "curated" view they're
+meant to see).
 """
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from api.deps import require_admin
 from data.store import InMemoryStore, get_store
 from solver.service import run_solve
 
@@ -18,7 +23,7 @@ class SolvePayload(BaseModel):
     enable_gap_reduction: bool = True
 
 
-@router.post("/solve")
+@router.post("/solve", dependencies=[Depends(require_admin)])
 def solve(payload: SolvePayload, store: InMemoryStore = Depends(get_store)):
     return run_solve(store, payload.fairness_index, payload.faculty_weight, payload.enable_gap_reduction)
 

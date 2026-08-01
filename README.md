@@ -82,11 +82,9 @@ App available at **http://localhost:5173**
 | `POST` | `/prefs/{id}` | any | Save a student's time-slot preferences |
 | `GET` | `/faculty-prefs/{id}` | any | Get a student's faculty preferences |
 | `POST` | `/faculty-prefs/{id}` | any | Save a student's faculty preferences |
-| `POST` | `/solve` | admin* | Run the CP-SAT solver (+ gap-reduction pass + baselines) |
-| `GET` | `/results` | any | Last solver result |
+| `POST` | `/solve` | admin | Run the CP-SAT solver (+ gap-reduction pass + baselines) |
+| `GET` | `/results` | any | Last solver result — students read this for their own post-solve timetable |
 | `GET/POST/PUT/DELETE` | `/admin/teachers`, `/admin/subjects`, `/admin/students`, `/admin/sections` | admin | Catalog CRUD backing the store |
-
-\* `/solve` is not yet role-restricted server-side — see Milestone 3.
 
 ### Role concept (local prototype only)
 
