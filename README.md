@@ -26,8 +26,12 @@ Students rate abstract time periods (not specific subjects), and the **OR-Tools 
 
 ```
 pwssap-prototype/
-├── backend/          # FastAPI + OR-Tools Python server
-│   └── main.py
+├── backend/
+│   ├── main.py            # FastAPI app entrypoint (wires the packages below)
+│   ├── domain/            # Persistence-agnostic entities (Teacher, Subject, Student, Section, TimeSlot)
+│   ├── data/              # InMemoryStore + seed data (structured so SQLite can later replace it)
+│   ├── solver/            # CP-SAT engine, gap-reduction + baseline heuristics, orchestration
+│   └── api/               # FastAPI routers (catalog, preferences, solver_routes)
 └── frontend/         # React (Vite) single-page app
     └── src/
         └── App.jsx
@@ -69,10 +73,10 @@ App available at **http://localhost:5173**
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/slots` | All slot instances (subject × section × meetings) |
+| `GET` | `/sections` | All sections (subject × label × teacher × meetings) — concrete timetable data |
 | `GET` | `/students` | All students |
-| `GET` | `/timeslots` | Canonical 6×4 time-slot grid |
-| `GET` | `/faculty` | List of distinct faculty names |
+| `GET` | `/timeslots` | Canonical 6×4 abstract time-slot grid (student-facing) |
+| `GET` | `/faculty-by-subject` | `{subject_code: [{id, name}, ...]}` — faculty teaching each subject |
 | `GET` | `/prefs/{id}` | Get a student's time-slot preferences |
 | `POST` | `/prefs/{id}` | Save a student's time-slot preferences |
 | `GET` | `/faculty-prefs/{id}` | Get a student's faculty preferences |

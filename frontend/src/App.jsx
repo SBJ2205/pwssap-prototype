@@ -35,7 +35,7 @@ export default function App() {
   const [enableGapReduction, setEnableGapReduction] = useState(true);
 
   useEffect(() => {
-    axios.get(`${API}/slots`).then(r => setSlots(r.data));
+    axios.get(`${API}/sections`).then(r => setSlots(r.data));
     axios.get(`${API}/students`).then(r => setStudents(r.data));
     axios.get(`${API}/timeslots`).then(r => setTimeslots(r.data));
     axios.get(`${API}/faculty-by-subject`).then(r => setFacultyBySubject(r.data));
@@ -67,16 +67,17 @@ export default function App() {
   }
 
   // Faculty ratings are PER SUBJECT (a professor's ranking under one subject
-  // is independent of the same professor under another). Cycle 0 (Indifferent)
-  // → 3 (Disliked) — no "Blocked" option, faculty mismatch is always a soft
-  // secondary penalty, never a hard block.
-  function cycleFacultyRating(subjCode, name) {
+  // is independent of the same professor under another), and keyed by
+  // teacher_id (not name) to match the backend's normalized domain model.
+  // Cycle 0 (Indifferent) → 3 (Disliked) — no "Blocked" option, faculty
+  // mismatch is always a soft secondary penalty, never a hard block.
+  function cycleFacultyRating(subjCode, teacherId) {
     const subjPrefs = facultyPrefs[subjCode] ?? {};
-    const cur = subjPrefs[name] ?? 0;
+    const cur = subjPrefs[teacherId] ?? 0;
     const next = cur >= 3 ? 0 : cur + 1;
     const updatedSubj = { ...subjPrefs };
-    if (next === 0) delete updatedSubj[name];
-    else updatedSubj[name] = next;
+    if (next === 0) delete updatedSubj[teacherId];
+    else updatedSubj[teacherId] = next;
     setFacultyPrefs({ ...facultyPrefs, [subjCode]: updatedSubj });
   }
 
@@ -679,15 +680,16 @@ function PrefsPage({ students, timeslots, selStudent, setSelStudent, prefs, cycl
 
 // ── Page: Faculty Preferences ──────────────────────────────────────────────
 function FacultyPrefsPage({ students, slots, facultyBySubject, selStudent, setSelStudent, facultyPrefs, cycleFacultyRating, saveFacultyPrefs }) {
-  // Subject code -> display name (e.g. "IT301" -> "Data Structures"), derived from /slots.
+  // Subject code -> display name (e.g. "IT301" -> "Data Structures"), derived from /sections.
   const subjectNames = {};
   slots.forEach(s => { subjectNames[s.code] = s.subject; });
 
-  const rankableSubjects = Object.entries(facultyBySubject).filter(([, names]) => names.length > 1);
-  const singleFacultySubjects = Object.entries(facultyBySubject).filter(([, names]) => names.length <= 1);
+  // facultyBySubject is {subject_code: [{id, name}, ...]} — each entry is a teacher.
+  const rankableSubjects = Object.entries(facultyBySubject).filter(([, teachers]) => teachers.length > 1);
+  const singleFacultySubjects = Object.entries(facultyBySubject).filter(([, teachers]) => teachers.length <= 1);
 
   const ratedCount = Object.values(facultyPrefs).reduce((sum, subjPrefs) => sum + Object.keys(subjPrefs).length, 0);
-  const rankableSlotCount = rankableSubjects.reduce((sum, [, names]) => sum + names.length, 0);
+  const rankableSlotCount = rankableSubjects.reduce((sum, [, teachers]) => sum + teachers.length, 0);
 
   return (
     <div>
@@ -732,7 +734,7 @@ function FacultyPrefsPage({ students, slots, facultyBySubject, selStudent, setSe
         </div>
 
         <div>
-          {rankableSubjects.map(([code, names]) => {
+          {rankableSubjects.map(([code, teachers]) => {
             const subjPrefs = facultyPrefs[code] ?? {};
             return (
               <Card key={code}>
@@ -740,19 +742,19 @@ function FacultyPrefsPage({ students, slots, facultyBySubject, selStudent, setSe
                   <code style={{ fontSize: 11, background: "#f1efe8", padding: "1px 5px", borderRadius: 3 }}>{code}</code>
                 </div>
                 <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-                  Rank the {names.length} faculty teaching this subject. Click to cycle: Indifferent → Preferred → Tolerable → Disliked.
+                  Rank the {teachers.length} faculty teaching this subject. Click to cycle: Indifferent → Preferred → Tolerable → Disliked.
                 </div>
-                {names.map(name => {
-                  const rating = subjPrefs[name] ?? 0;
+                {teachers.map(t => {
+                  const rating = subjPrefs[t.id] ?? 0;
                   const m = RATING_META[rating];
                   return (
-                    <div key={name} onClick={() => cycleFacultyRating(code, name)}
+                    <div key={t.id} onClick={() => cycleFacultyRating(code, t.id)}
                       style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer",
                         padding: "10px 14px", marginBottom: 6, borderRadius: 8,
                         background: m.bg, border: `1.5px solid ${rating > 0 ? m.color : "#e0ddd8"}`,
                       }}>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: "#333" }}>{name}</span>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: "#333" }}>{t.name}</span>
                       <span style={{ fontSize: 12, fontWeight: 600, color: m.color }}>{m.label} {m.pill}</span>
                     </div>
                   );
@@ -765,9 +767,9 @@ function FacultyPrefsPage({ students, slots, facultyBySubject, selStudent, setSe
             <Card>
               <div style={{ fontWeight: 500, marginBottom: 4 }}>No ranking needed</div>
               <div style={{ fontSize: 12, color: "#888" }}>
-                {singleFacultySubjects.map(([code, names]) => (
+                {singleFacultySubjects.map(([code, teachers]) => (
                   <div key={code} style={{ marginBottom: 4 }}>
-                    <strong>{subjectNames[code] || code}</strong> is taught by only one faculty member ({names[0] || "—"}) — there's no choice to rank.
+                    <strong>{subjectNames[code] || code}</strong> is taught by only one faculty member ({teachers[0]?.name || "—"}) — there's no choice to rank.
                   </div>
                 ))}
               </div>
