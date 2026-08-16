@@ -4,6 +4,169 @@
   padding: 0;
 }
 
+/* ── Design tokens ────────────────────────────────────────────────────────
+   Every color in the app is one of these variables (see components/ui.jsx,
+   constants.js, and each page). Light values below are the ORIGINAL literal
+   hex values the app shipped with — dark mode only overrides them under
+   [data-theme="dark"], so the light theme is pixel-identical to before. */
+:root {
+  color-scheme: light;
+
+  --bg-page: #f5f4f0;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #f1efe8;
+  --bg-surface-hover: #f9f8f5;
+
+  --border-default: #e5e3dc;
+  --border-subtle: #e8e6e0;
+
+  --text-primary: #222222;
+  --text-secondary: #555555;
+  --text-muted: #888888;
+
+  --on-accent: #ffffff;
+
+  --accent-blue: #185fa5;
+  --accent-green: #1d9e75;
+  --accent-orange: #d85a30;
+  --accent-purple: #7f77dd;
+  --accent-pink: #c2478d;
+  --accent-amber: #ba7517;
+
+  --rating-green-bg: #eaf3de;
+  --rating-green-fg: #27500a;
+  --rating-green-border-soft: rgba(39, 80, 10, 0.13);
+
+  --rating-blue-bg: #e6f1fb;
+  --rating-blue-fg: #0c447c;
+  --rating-blue-border-soft: rgba(12, 68, 124, 0.13);
+
+  --rating-amber-bg: #faeeda;
+  --rating-amber-fg: #633806;
+  --rating-amber-border-soft: rgba(99, 56, 6, 0.13);
+
+  --rating-red-bg: #fcebeb;
+  --rating-red-fg: #791f1f;
+  --rating-red-border-soft: rgba(121, 31, 31, 0.13);
+
+  --select-border: #b5d4f4;
+  --success-border: #c0dd97;
+  --warn-border: #fac775;
+  --danger-border: #f7c1c1;
+  --danger-text-strong: #aa3333;
+
+  --info-bg: #eef5ff;
+  --info-border: #c0d9f7;
+  --info-title: #1a385a;
+  --info-body: #2a4d78;
+
+  --tooltip-bg: #1e2330;
+  --tooltip-fg: #e8eaf0;
+  --tooltip-border: rgba(255, 255, 255, 0.08);
+
+  --shadow-btn: 0 1px 4px rgba(24, 95, 165, 0.25);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-page: #14151a;
+  --bg-surface: #1c1e25;
+  --bg-surface-alt: #262933;
+  --bg-surface-hover: #21232b;
+
+  --border-default: #33363f;
+  --border-subtle: #2b2e37;
+
+  --text-primary: #edeef2;
+  --text-secondary: #b7bcc8;
+  --text-muted: #868c9a;
+
+  --on-accent: #ffffff;
+
+  --accent-blue: #4c9fe8;
+  --accent-green: #3bc99a;
+  --accent-orange: #ef7c52;
+  --accent-purple: #a39bff;
+  --accent-pink: #e069b0;
+  --accent-amber: #e0a23f;
+
+  --rating-green-bg: #1c2b14;
+  --rating-green-fg: #8fcb5c;
+  --rating-green-border-soft: rgba(143, 203, 92, 0.22);
+
+  --rating-blue-bg: #142639;
+  --rating-blue-fg: #7ec1f5;
+  --rating-blue-border-soft: rgba(126, 193, 245, 0.22);
+
+  --rating-amber-bg: #3a2a10;
+  --rating-amber-fg: #e8b368;
+  --rating-amber-border-soft: rgba(232, 179, 104, 0.22);
+
+  --rating-red-bg: #3a1616;
+  --rating-red-fg: #f08585;
+  --rating-red-border-soft: rgba(240, 133, 133, 0.22);
+
+  --select-border: #2f5f8f;
+  --success-border: #4d7a2c;
+  --warn-border: #8a6425;
+  --danger-border: #7a3a3a;
+  --danger-text-strong: #e58a8a;
+
+  --info-bg: #172233;
+  --info-border: #2a4d78;
+  --info-title: #bfe0ff;
+  --info-body: #9fc6ea;
+
+  --tooltip-bg: #10121a;
+  --tooltip-fg: #e8eaf0;
+  --tooltip-border: rgba(255, 255, 255, 0.1);
+
+  --shadow-btn: 0 1px 4px rgba(76, 159, 232, 0.25);
+}
+
+html,
 body {
-  background: #f5f4f0;
+  background: var(--bg-page);
+  transition: background-color 0.15s ease;
+}
+
+body {
+  background: var(--bg-page);
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+  }
+  :root {
+    --bg-page: #ffffff;
+    --bg-surface: #ffffff;
+    --bg-surface-alt: #f1efe8;
+    --bg-surface-hover: #f9f8f5;
+    --border-default: #e5e3dc;
+    --border-subtle: #e8e6e0;
+    --text-primary: #222222;
+    --text-secondary: #555555;
+    --text-muted: #888888;
+    --on-accent: #ffffff;
+    --rating-green-bg: #eaf3de;
+    --rating-green-fg: #27500a;
+    --rating-blue-bg: #e6f1fb;
+    --rating-blue-fg: #0c447c;
+    --rating-amber-bg: #faeeda;
+    --rating-amber-fg: #633806;
+    --rating-red-bg: #fcebeb;
+    --rating-red-fg: #791f1f;
+  }
+  * {
+    box-shadow: none !important;
+  }
+  .timetable-layout {
+    grid-template-columns: 1fr !important;
+  }
 }
