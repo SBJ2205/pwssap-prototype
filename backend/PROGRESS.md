@@ -14,7 +14,7 @@ picking this project up without prior conversation context.
 - [x] Phase 5: Teacher availability management
 - [x] Phase 6: Student preference submission and validation
 - [x] Phase 7: Faculty preference handling
-- [ ] Phase 8: Section generation and timetable preparation
+- [x] Phase 8: Section generation and timetable preparation
 - [ ] Phase 9: Solver objective with teacher load balancing
 - [ ] Phase 10: Published result + admin override flow
 - [ ] Phase 11: Student and teacher timetable views
@@ -318,38 +318,106 @@ Phase 2+ introduces (subject list/choice-tag config UI in Phase 2,
 CSV import UIs in Phase 3-4, etc.) — do not treat the current frontend
 as a regression, it simply hasn't been touched yet.
 
-## Next phase (Phase 8)
+## Phase 8 -- what exists now
 
-Section generation and timetable preparation -- this is the phase
-where the system starts turning catalog data into a concrete,
-schedulable structure, ahead of the solver (Phase 9):
-- For each subject, generate the sections a semester actually needs:
-  - **Theory**: `weekly_hours` may be split into a linked pattern of
-    meetings (`subject.slot_structure`/`linked_pattern`, currently just
-    a raw string captured by Phase 2's CSV import, unparsed) -- Phase 8
-    is where that string needs an actual parser and a Section's
-    Meetings need to preserve the linked pattern as one coherent unit
-    (product decision #6).
-  - **Labs**: `capacity`/24 (or whatever ratio) determines how many
-    *parallel, independent, repeated* sections are needed -- e.g. 216
-    students / 24 per section = 9 lab sections. No linking; each is a
-    standalone section (product decision #6). Use
-    `subject.capacity` (the CSV column, not a fixed rule derived from
-    theory-vs-lab) for the per-section cap, matching product decision
-    #5.
-  - Every generated meeting must be checked against
-    `domain.validation.validate_slot_for_subject_type` (already exists
-    from Phase 1) so a lab never lands on Monday's blocked slot and a
-    theory section never lands in slot 4.
-- Assign each section a capable teacher (`store.teachers_for_subject`)
-  respecting that teacher's availability (`store.is_teacher_available`,
-  Phase 5) -- this is still pre-solver scaffolding, not the actual
-  optimization (that's explicitly Phase 9's job), so a reasonable
-  Phase 8 scope is "produce a feasible-looking section list", not
-  "produce the optimal one".
-- This is the natural point to introduce `domain/section_generation.py`
-  (or similar) as its own module, per the architecture guideline to
-  keep "section generation" and "solver preparation" as distinct
-  concerns (see product decision #16).
-- Store already has `Section`/`Meeting` models and `add_section` from
-  Phase 1, unused by any generation logic until now.
+Backend (`backend/`):
+- `domain/section_generation.py` -- new module (the core of Phase 8):
+  - `parse_slot_structure(raw, weekly_hours) -> List[int]` -- parses
+    the raw `slot_structure` CSV column (e.g. `None`, `"2+2"`,
+    `"2+2+2"`, `"4"`) into a list of 2-hour per-meeting slot counts.
+    Raises `SlotStructureError` when the string is malformed, the
+    segments are not all 2-hour blocks (the grid only supports 2-h
+    slots), or the total does not equal `weekly_hours`.
+  - `GeneratedSections` dataclass -- `.sections: List[Section]` and
+    `.warnings: List[SectionGenerationWarning]`.
+  - `generate_sections_for_run(run, subjects, all_slots,
+    capable_teacher_ids_for, teacher_availability_map, enrolled_counts,
+    section_id_start)` -- public entry point called by the API layer.
+    Internally splits into:
+    - `_generate_theory_sections` -- one section per subject with
+      `num_meetings = len(parse_slot_structure(...))` linked meetings,
+      each placed in the first valid theory slot for the assigned
+      teacher (feasibility placeholder; Phase 9 optimises).
+    - `_generate_lab_sections` -- `ceil(enrolled/capacity)` parallel
+      sections (min 1), each a single-meeting standalone practical
+      placed in a valid lab slot; load is spread across capable
+      teachers by tracking per-teacher section counts.
+  - `validate_slot_for_subject_type` (from Phase 1) is called for
+    every meeting, so Monday-1 and slot-4-for-theory hard rules are
+    always enforced (product decision #4).
+  - Sections with no capable teacher or no free slot are still created
+    with `teacher_id=None` / `slot_key=""` and a
+    `SectionGenerationWarning` is emitted rather than aborting.
+- `domain/models.py` -- `Section` gained `run_id: Optional[int] = None`
+  so sections are linked to the run that produced them. Backwards-
+  compatible (existing code that passes no `run_id` continues to work).
+- `data/store.py` additions:
+  - `list_sections(subject_code=None, run_id=None)` -- now accepts an
+    optional `run_id` filter in addition to the existing
+    `subject_code` filter.
+  - `list_sections_for_run(run_id)` -- all sections for one run.
+  - `clear_sections_for_run(run_id) -> int` -- remove all sections for
+    a run; returns deleted count so the API can report it.
+  - `enrolled_count_for_subject(subject_code, run_id) -> int` -- Phase
+    8 enrollment approximation: choice-based subjects count students
+    whose choice selection maps to the subject's tag; non-choice
+    subjects count all semester students.
+- `api/sections.py` -- admin-only routes:
+  - `POST /admin/runs/{run_id}/generate-sections` -- idempotent;
+    clears old sections for the run, generates new ones, persists, and
+    returns `{run_id, cleared_count, generated_count, sections,
+    warnings}`.
+  - `GET /admin/runs/{run_id}/sections[?subject_code=]` -- list
+    sections for a run with optional subject filter.
+  - `GET /admin/runs/{run_id}/sections/{section_id}` -- single section
+    detail; 404 if section does not belong to the specified run.
+- Tests: `tests/test_section_generation.py` (30/30 checks: all
+  `parse_slot_structure` forms and error cases, theory section linked-
+  meeting structure, Monday-1 and slot-4 exclusion, lab parallelism for
+  enrolled=24/48/73/0, lab slot validity, no-teacher warning,
+  label conventions) and `tests/test_api_phase8.py` (27/27 checks:
+  role gating, 404s, successful generation, list/detail, idempotent
+  regeneration, subject_code filter, meeting shape).
+- Full regression: **153/153 checks across 14 suites pass**
+  (test_domain through test_api_phase8).
+
+## Next phase (Phase 9)
+
+Solver objective with teacher load balancing -- this is the phase where
+the system produces an *optimised* timetable from the scaffolding built
+in Phase 8:
+- Replace the Phase 8 "first-available" teacher and slot assignments
+  with a CP-SAT optimisation that:
+  1. Maximises student time-slot satisfaction (primary objective,
+     product decision #12) -- uses `student_time_preferences` from
+     Phase 6.
+  2. Maximises faculty preference satisfaction (secondary, lower
+     weight, product decision #11) -- uses `student_faculty_preferences`
+     from Phase 7.
+  3. Balances teacher teaching loads (tertiary but a real optimisation
+     term, not cosmetic, product decision #12): minimise the range or
+     variance of section counts across teachers.
+  4. Hard constraints (always take precedence, product decision #12):
+     - Teacher availability (`is_teacher_available` from Phase 5).
+     - Slot-type rules (Monday-1 blocked, slot-4 lab-only -- already
+       encoded in `validate_slot_for_subject_type`).
+     - No teacher scheduled in two sections at the same slot.
+     - Section capacity limits.
+- The solver should transition the run's status from DRAFT to SOLVED,
+  and then immediately to PUBLISHED (product decision #13).
+- Suggested new module: `solver/engine.py` (note: the old prototype
+  engine was removed in Phase 1, so this is a fresh implementation).
+  The old CP-SAT approach documented in `## What was intentionally
+  removed` is still a reasonable starting point for the decision
+  variable shape, but the objective function must change to match the
+  three-level priority above.
+- `solver/service.py` -- thin wrapper that takes a `run_id`, reads
+  everything from the store, calls the engine, writes the result back,
+  and transitions the run status.
+- `api/solver.py` -- `POST /admin/runs/{run_id}/solve`; admin-only;
+  calls `solver/service.py` synchronously for now (async background
+  job is a later optimisation if needed).
+- Phase 9 should produce a `tests/test_solver.py` with at least: a
+  tiny feasible instance solves and all hard constraints hold; teacher
+  load is balanced; a preference-signal test (student who BLOCKs a
+  slot is never scheduled there); run status transitions to PUBLISHED.

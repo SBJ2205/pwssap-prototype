@@ -113,13 +113,19 @@ class Section:
     """One taught section of a subject (a concrete group of students +
     teacher + meeting time(s)). Theory sections may carry more than one
     Meeting to represent a linked pattern (product decision #6); lab
-    sections are typically single-meeting, parallel, repeated sections."""
+    sections are typically single-meeting, parallel, repeated sections.
+
+    run_id links the section to the GenerationRun it was produced for,
+    so sections can be cleared/regenerated per run without affecting
+    sections from other runs.
+    """
     id: Optional[int]
     subject_code: str
     label: str
     teacher_id: Optional[str]
     capacity: int
     meetings: List[Meeting] = field(default_factory=list)
+    run_id: Optional[int] = None
 
 
 @dataclass

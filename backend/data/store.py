@@ -191,11 +191,29 @@ class InMemoryStore:
         return list(self.student_choice_selections.get(roll_number, []))
 
     # ── Sections (concrete teacher/time timetable data) ─────────────────────
-    def list_sections(self, subject_code: Optional[str] = None) -> List[Section]:
+    def list_sections(
+        self,
+        subject_code: Optional[str] = None,
+        run_id: Optional[int] = None,
+    ) -> List[Section]:
         sections = list(self.sections.values())
         if subject_code is not None:
             sections = [s for s in sections if s.subject_code == subject_code]
+        if run_id is not None:
+            sections = [s for s in sections if s.run_id == run_id]
         return sections
+
+    def list_sections_for_run(self, run_id: int) -> List[Section]:
+        """All sections produced for a specific generation run."""
+        return [s for s in self.sections.values() if s.run_id == run_id]
+
+    def clear_sections_for_run(self, run_id: int) -> int:
+        """Remove every section belonging to run_id.  Returns the count of
+        deleted sections, so the caller can log/report how many were cleared."""
+        to_delete = [sid for sid, s in self.sections.items() if s.run_id == run_id]
+        for sid in to_delete:
+            del self.sections[sid]
+        return len(to_delete)
 
     def get_section(self, section_id: int) -> Optional[Section]:
         return self.sections.get(section_id)
@@ -209,6 +227,47 @@ class InMemoryStore:
 
     def delete_section(self, section_id: int) -> None:
         self.sections.pop(section_id, None)
+
+    def enrolled_count_for_subject(
+        self, subject_code: str, run_id: int
+    ) -> int:
+        """Count how many students in the run's semester are enrolled in
+        subject_code for Phase 8 lab-parallelism calculation.
+
+        Enrollment logic (Phase 8 approximation):
+        - For choice-based subjects: count students whose choice selections
+          for this run map to the subject's tag.
+        - For non-choice subjects: count all students in the run's semester
+          (every student takes non-choice subjects).
+        - If the subject or run doesn't exist, returns 0.
+
+        Phase 10 (manual overrides) can refine actual enrollment later.
+        """
+        run = self.get_run(run_id)
+        subject = self.get_subject(subject_code)
+        if run is None or subject is None:
+            return 0
+
+        # Build the set of numeric values that map to this subject's tag.
+        choice_numeric_values = {
+            c.numeric_value
+            for c in run.choice_tag_configs
+            if c.tag == subject.subject_tag and c.is_choice_based
+        }
+
+        semester_students = self.list_students(semester=run.semester)
+
+        if not choice_numeric_values:
+            # Non-choice-based subject: all semester students are enrolled.
+            return len(semester_students)
+
+        # Choice-based: count students who selected this subject's tag.
+        count = 0
+        for student in semester_students:
+            selections = self.get_student_choice_selections(student.roll_number)
+            if any(sel.numeric_value in choice_numeric_values for sel in selections):
+                count += 1
+        return count
 
     # ── Generation runs (semester-scoped, product decision #2) ─────────────
     def create_run(self, semester: int) -> GenerationRun:
