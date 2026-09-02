@@ -15,6 +15,7 @@ not demo data — see domain/timeslots.py.
 from typing import Dict, List, Optional
 
 from domain.models import (
+    ChoiceTagConfig,
     GenerationRun,
     Section,
     Student,
@@ -72,6 +73,12 @@ class InMemoryStore:
 
     def delete_subject(self, code: str) -> None:
         self.subjects.pop(code, None)
+
+    def list_subject_tags(self, semester: Optional[int] = None) -> List[str]:
+        """Distinct subject_tag values currently in the catalog, optionally
+        scoped to one semester. Used by the admin choice-tag configuration
+        UI (product decision #3) to show which tags exist to choose from."""
+        return sorted({s.subject_tag for s in self.list_subjects(semester)})
 
     # ── Teachers ───────────────────────────────────────────────────────────
     def list_teachers(self) -> List[Teacher]:
@@ -165,8 +172,20 @@ class InMemoryStore:
     def get_run(self, run_id: int) -> Optional[GenerationRun]:
         return self.runs.get(run_id)
 
-    def list_runs(self) -> List[GenerationRun]:
-        return list(self.runs.values())
+    def list_runs(self, semester: Optional[int] = None) -> List[GenerationRun]:
+        runs = list(self.runs.values())
+        if semester is not None:
+            runs = [r for r in runs if r.semester == semester]
+        return runs
+
+    def set_run_choice_tags(self, run_id: int, configs: List[ChoiceTagConfig]) -> GenerationRun:
+        """Replace a run's choice-tag configuration wholesale. The mapping
+        is only ever meaningful for this one run (product decision #3), so
+        there is no merge semantics here — the admin submits the full set
+        each time."""
+        run = self.runs[run_id]
+        run.choice_tag_configs = list(configs)
+        return run
 
 
 # ── Store access ──────────────────────────────────────────────────────────

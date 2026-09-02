@@ -1,7 +1,15 @@
-# PWSSAP — Preference-Weighted Section & Slot Assignment Prototype
+# PWSSAP — Department Timetable Generation System
 
-A full-stack prototype for automated student section assignment based on **time-slot preferences**.  
-Students rate abstract time periods (not specific subjects), and the **OR-Tools CP-SAT solver** finds the globally optimal assignment that minimises total dissatisfaction while keeping outcomes fair.
+A department-scoped academic timetable generation system: subject/student/teacher CSV
+ingestion, admin-configured choice-based tags, student time-slot and faculty
+preferences, and a solver that balances student satisfaction against teacher workload.
+
+> **Status:** this project is being rebuilt phase-by-phase against a new product spec.
+> See [`backend/PROGRESS.md`](backend/PROGRESS.md) for exactly what's implemented so
+> far, what was intentionally removed from the earlier prototype, and what's next. The
+> feature list and architecture description below describe the ORIGINAL prototype and
+> are being superseded phase-by-phase — treat `backend/PROGRESS.md` as the source of
+> truth for current status.
 
 ---
 
@@ -55,7 +63,7 @@ venv\Scripts\activate
 # macOS/Linux
 source venv/bin/activate
 
-pip install fastapi uvicorn ortools
+pip install fastapi uvicorn ortools python-multipart httpx
 uvicorn main:app --reload --port 8000
 ```
 

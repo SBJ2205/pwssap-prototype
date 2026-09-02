@@ -8,7 +8,7 @@ picking this project up without prior conversation context.
 ## Status
 
 - [x] Phase 1: Data model and validation
-- [ ] Phase 2: Subject CSV + admin choice-tag configuration
+- [x] Phase 2: Subject CSV + admin choice-tag configuration
 - [ ] Phase 3: Student CSV import and mapping
 - [ ] Phase 4: Teacher CSV import and subject-capability mapping
 - [ ] Phase 5: Teacher availability management
@@ -52,6 +52,57 @@ Backend (`backend/`):
   validators above. Run with:
   `venv\Scripts\python.exe -m tests.test_domain` (from `backend/`).
 
+## Phase 2 — what exists now
+
+Backend (`backend/`):
+- `ingestion/subjects_csv.py` — `parse_subjects_csv(content: str) -> SubjectCsvResult`.
+  Reads the required columns (`subject_code, subject_name, subject_tag,
+  semester, type, weekly_hours, capacity`) plus an optional
+  `slot_structure` column (`linked_pattern` accepted as an alias for the
+  same column). Per-row errors are collected (not raised), so a whole
+  CSV can be checked in one pass; `type` is case-insensitive; duplicate
+  `subject_code` within the file is a row error; a missing required
+  column is a single file-level error (`row_number=0`). Reuses
+  `domain.validation.validate_subject` for the domain-level checks
+  (semester range, positive weekly_hours/capacity, non-empty tag, etc.)
+  once a row's raw columns convert cleanly.
+- `api/subjects.py`:
+  - `GET /subjects?semester=` — open to any role; lists the current
+    subject catalog, optionally filtered by semester.
+  - `GET /admin/subjects/tags?semester=` — admin-only; distinct
+    `subject_tag` values currently in the catalog (feeds the
+    choice-tag configuration screen).
+  - `POST /admin/subjects/import` — admin-only; multipart CSV upload.
+    **All-or-nothing**: if any row fails validation, nothing is
+    committed and the full list of row errors is returned (HTTP 400)
+    so the admin fixes the CSV once and re-uploads, rather than ending
+    up with a partially-imported catalog. On success, subjects are
+    written via `InMemoryStore.upsert_subject`.
+- `api/runs.py` — admin-only `/admin/runs` routes for choice-tag
+  configuration (product decisions #2 and #3):
+  - `POST /admin/runs` — body `{semester, choice_tags: [{tag,
+    numeric_value, is_choice_based}]}`. Validates the semester and the
+    tag/numeric-value uniqueness (`validate_choice_tag_configs`), then
+    creates a `GenerationRun` and attaches the configs. Returns a
+    non-blocking `warnings` list for any configured tag with zero
+    matching subjects in that semester (admin may legitimately be
+    configuring ahead of a subject upload, so this warns rather than
+    rejects).
+  - `GET /admin/runs`, `GET /admin/runs/{id}` — list/fetch runs.
+  - `PUT /admin/runs/{id}/choice-tags` — replace a run's choice-tag
+    configuration wholesale (no merge semantics — the mapping is only
+    ever valid for that one run, so the admin resubmits the full set).
+- `data/store.py` additions: `list_subject_tags(semester=None)`,
+  `list_runs(semester=None)` (now filterable), `set_run_choice_tags`.
+- New venv dependencies: `python-multipart` (required by FastAPI for
+  `UploadFile`) and `httpx` (used by `fastapi.testclient.TestClient` in
+  tests only). Both added to the README's `pip install` line.
+- Tests: `tests/test_subjects_csv.py` (8 checks on the parser directly)
+  and `tests/test_api_phase2.py` (8 HTTP-level checks via
+  `TestClient`, covering role-gating, all-or-nothing import behavior,
+  semester filtering, tag listing, run creation/validation/update).
+  Run both the same way as `tests/test_domain.py` (see above).
+
 ## What was intentionally removed
 
 The previous prototype ("blind abstract time-slot rating" model, no CSV
@@ -85,17 +136,22 @@ Phase 2+ introduces (subject list/choice-tag config UI in Phase 2,
 CSV import UIs in Phase 3-4, etc.) — do not treat the current frontend
 as a regression, it simply hasn't been touched yet.
 
-## Next phase (Phase 2)
+## Next phase (Phase 3)
 
-Subject CSV import + admin choice-tag configuration:
-- CSV parser for `subject_code, subject_name, subject_tag, semester,
-  type, weekly_hours, capacity, slot_structure/linked_pattern` producing
-  row-level validation errors (reuse `domain/validation.validate_subject`).
-- Store subjects via `InMemoryStore.upsert_subject`.
-- An endpoint (and later UI) for the admin to see the distinct set of
-  `subject_tag` values present for the semester being configured, mark
-  any subset of them `is_choice_based=True`, and assign each a unique
-  numeric value — persisted as `GenerationRun.choice_tag_configs` via
-  `InMemoryStore.create_run` (validate with
-  `validate_choice_tag_configs`). Remember: no fixed limit on how many
-  tags can be choice-based, and the mapping is only valid for that run.
+Student CSV import and choice-value mapping:
+- CSV parser (`ingestion/students_csv.py`) for `roll_number, name,
+  semester, choice_1, choice_2, ...` — the number of choice columns is
+  dynamic per run, not fixed, so the parser needs the *active* run's
+  `choice_tag_configs` (from Phase 2) to know how many choice columns to
+  expect and what numeric values are legal for each.
+- Row-level validation reusing `domain/validation.validate_student`,
+  plus new checks: every `choice_*` value must match one of the run's
+  configured `numeric_value`s; duplicate `roll_number` within the file.
+- Store parsed rows via `InMemoryStore.upsert_student` and
+  `set_student_choice_selections` (already present in the store from
+  Phase 1/2 — not yet exercised by any import path).
+- Likely all-or-nothing import, consistent with the Phase 2 subject
+  import UX decision (see above) — keep that consistent unless there's
+  a concrete reason to diverge.
+- API: `POST /admin/students/import?run_id=` (multipart CSV, admin-only)
+  and `GET /students?semester=` (open, mirroring `/subjects`).
