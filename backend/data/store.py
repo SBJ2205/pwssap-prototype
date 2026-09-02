@@ -1,204 +1,190 @@
 """In-memory data store behind a small repository-style interface.
 
-Everything the api/ and solver/ layers need lives behind this class, so the
-underlying persistence can move to SQLite later without touching callers —
-they only ever depend on InMemoryStore's method signatures, never on how
-the data is actually held.
+Everything the api/ (and later solver/) layers need lives behind this
+class, so the underlying persistence can move to a real DB later without
+touching callers — they only ever depend on InMemoryStore's method
+signatures, never on how the data is actually held.
+
+Unlike the earlier prototype, this store starts EMPTY of subjects,
+teachers, and students: this is a CSV-driven, department-scoped system
+(see product decisions #1 and #7-#8), so fabricating demo rows here would
+misrepresent how the real app is populated. The only thing built eagerly
+is the canonical time-slot grid, which is a fixed structural constant,
+not demo data — see domain/timeslots.py.
 """
 from typing import Dict, List, Optional
 
-from domain.models import Teacher, Subject, Student, Section, Meeting, TimeSlot
+from domain.models import (
+    GenerationRun,
+    Section,
+    Student,
+    StudentChoiceSelection,
+    Subject,
+    Teacher,
+    TeacherSubjectCapability,
+)
+from domain.timeslots import TimeSlot, build_canonical_grid
 
 
 class InMemoryStore:
     def __init__(self) -> None:
-        self.teachers: Dict[int, Teacher] = {}
+        # Fixed structural constant, shared by every run.
+        self.time_slots: List[TimeSlot] = build_canonical_grid()
+
         self.subjects: Dict[str, Subject] = {}
-        self.students: Dict[int, Student] = {}
+
+        self.teachers: Dict[str, Teacher] = {}
+        self.teacher_capabilities: List[TeacherSubjectCapability] = []
+        # teacher_id -> slot_key -> available (hard constraint, admin-managed).
+        # Missing entries default to available=True; the admin only needs
+        # to mark the slots that are actually blocked.
+        self.teacher_availability: Dict[str, Dict[str, bool]] = {}
+
+        self.students: Dict[str, Student] = {}
+        self.student_choice_selections: Dict[str, List[StudentChoiceSelection]] = {}
+
         self.sections: Dict[int, Section] = {}
-        self.time_slots: List[TimeSlot] = []
+        self._next_section_id: int = 0
 
-        # Student-submitted preference data. Missing keys are intentionally
-        # NOT filled in here — "defaults to indifferent" is a solver-layer
-        # concern (see solver/helpers.py), not a storage concern.
-        self.student_ts_prefs: Dict[int, Dict[str, int]] = {}
-        self.student_faculty_prefs: Dict[int, Dict[str, Dict[int, int]]] = {}
+        self.runs: Dict[int, GenerationRun] = {}
+        self._next_run_id: int = 0
 
-        self.last_result: dict = {}
+    # ── Time slots (fixed, structural) ─────────────────────────────────────
+    def list_time_slots(self) -> List[TimeSlot]:
+        return self.time_slots
+
+    def get_time_slot(self, key: str) -> Optional[TimeSlot]:
+        return next((s for s in self.time_slots if s.key == key), None)
+
+    # ── Subjects ─────────────────────────────────────────────────────────────
+    def list_subjects(self, semester: Optional[int] = None) -> List[Subject]:
+        subjects = list(self.subjects.values())
+        if semester is not None:
+            subjects = [s for s in subjects if s.semester == semester]
+        return subjects
+
+    def get_subject(self, code: str) -> Optional[Subject]:
+        return self.subjects.get(code)
+
+    def upsert_subject(self, subject: Subject) -> Subject:
+        self.subjects[subject.subject_code] = subject
+        return subject
+
+    def delete_subject(self, code: str) -> None:
+        self.subjects.pop(code, None)
 
     # ── Teachers ───────────────────────────────────────────────────────────
     def list_teachers(self) -> List[Teacher]:
         return list(self.teachers.values())
 
-    def get_teacher(self, teacher_id: int) -> Teacher:
-        return self.teachers[teacher_id]
+    def get_teacher(self, teacher_id: str) -> Optional[Teacher]:
+        return self.teachers.get(teacher_id)
 
-    def add_teacher(self, name: str, department: Optional[str] = None) -> Teacher:
-        new_id = (max(self.teachers.keys()) + 1) if self.teachers else 0
-        teacher = Teacher(id=new_id, name=name, department=department)
-        self.teachers[new_id] = teacher
+    def upsert_teacher(self, teacher: Teacher) -> Teacher:
+        self.teachers[teacher.teacher_id] = teacher
         return teacher
 
-    def update_teacher(self, teacher_id: int, name: Optional[str] = None,
-                        department: Optional[str] = None) -> Teacher:
-        teacher = self.teachers[teacher_id]
-        if name is not None:
-            teacher.name = name
-        if department is not None:
-            teacher.department = department
-        return teacher
+    def add_teacher_capability(self, teacher_id: str, subject_code: str) -> None:
+        exists = any(
+            c.teacher_id == teacher_id and c.subject_code == subject_code
+            for c in self.teacher_capabilities
+        )
+        if not exists:
+            self.teacher_capabilities.append(TeacherSubjectCapability(teacher_id, subject_code))
 
-    def delete_teacher(self, teacher_id: int) -> None:
-        if any(s.teacher_id == teacher_id for s in self.sections.values()):
-            raise ValueError("Cannot delete a teacher assigned to an existing section")
-        del self.teachers[teacher_id]
+    def capabilities_for_teacher(self, teacher_id: str) -> List[str]:
+        return [c.subject_code for c in self.teacher_capabilities if c.teacher_id == teacher_id]
 
-    # ── Subjects ───────────────────────────────────────────────────────────
-    def list_subjects(self) -> List[Subject]:
-        return list(self.subjects.values())
+    def teachers_for_subject(self, subject_code: str) -> List[str]:
+        return [c.teacher_id for c in self.teacher_capabilities if c.subject_code == subject_code]
 
-    def get_subject(self, code: str) -> Subject:
-        return self.subjects[code]
+    # ── Teacher availability (hard constraint) ──────────────────────────────
+    def set_teacher_availability(self, teacher_id: str, slot_key: str, available: bool) -> None:
+        self.teacher_availability.setdefault(teacher_id, {})[slot_key] = available
 
-    def add_subject(self, code: str, name: str, department: Optional[str] = None,
-                     year: Optional[int] = None) -> Subject:
-        if code in self.subjects:
-            raise ValueError(f"Subject {code} already exists")
-        subject = Subject(code=code, name=name, department=department, year=year)
-        self.subjects[code] = subject
-        return subject
+    def is_teacher_available(self, teacher_id: str, slot_key: str) -> bool:
+        return self.teacher_availability.get(teacher_id, {}).get(slot_key, True)
 
-    def update_subject(self, code: str, name: Optional[str] = None,
-                        department: Optional[str] = None, year: Optional[int] = None) -> Subject:
-        subject = self.subjects[code]
-        if name is not None:
-            subject.name = name
-        if department is not None:
-            subject.department = department
-        if year is not None:
-            subject.year = year
-        return subject
-
-    def delete_subject(self, code: str) -> None:
-        if self.sections_for_subject(code):
-            raise ValueError("Cannot delete a subject with existing sections")
-        del self.subjects[code]
+    def get_teacher_availability(self, teacher_id: str) -> Dict[str, bool]:
+        return dict(self.teacher_availability.get(teacher_id, {}))
 
     # ── Students ───────────────────────────────────────────────────────────
-    def list_students(self) -> List[Student]:
-        return list(self.students.values())
+    def list_students(self, semester: Optional[int] = None) -> List[Student]:
+        students = list(self.students.values())
+        if semester is not None:
+            students = [s for s in students if s.semester == semester]
+        return students
 
-    def get_student(self, student_id: int) -> Optional[Student]:
-        return self.students.get(student_id)
+    def get_student(self, roll_number: str) -> Optional[Student]:
+        return self.students.get(roll_number)
 
-    def add_student(self, name: str, roll: str, department: Optional[str] = None,
-                     year: Optional[int] = None) -> Student:
-        new_id = (max(self.students.keys()) + 1) if self.students else 0
-        student = Student(id=new_id, name=name, roll=roll, department=department, year=year)
-        self.students[new_id] = student
+    def upsert_student(self, student: Student) -> Student:
+        self.students[student.roll_number] = student
         return student
 
-    def update_student(self, student_id: int, name: Optional[str] = None, roll: Optional[str] = None,
-                        department: Optional[str] = None, year: Optional[int] = None) -> Student:
-        student = self.students[student_id]
-        if name is not None:
-            student.name = name
-        if roll is not None:
-            student.roll = roll
-        if department is not None:
-            student.department = department
-        if year is not None:
-            student.year = year
-        return student
+    def delete_student(self, roll_number: str) -> None:
+        self.students.pop(roll_number, None)
+        self.student_choice_selections.pop(roll_number, None)
 
-    def delete_student(self, student_id: int) -> None:
-        del self.students[student_id]
-        self.student_ts_prefs.pop(student_id, None)
-        self.student_faculty_prefs.pop(student_id, None)
+    # ── Student choice selections (per-run) ─────────────────────────────────
+    def set_student_choice_selections(
+        self, roll_number: str, selections: List[StudentChoiceSelection]
+    ) -> None:
+        self.student_choice_selections[roll_number] = selections
 
-    # ── Sections (hidden concrete timetable data) ─────────────────────────
-    def list_sections(self) -> List[Section]:
-        return list(self.sections.values())
+    def get_student_choice_selections(self, roll_number: str) -> List[StudentChoiceSelection]:
+        return list(self.student_choice_selections.get(roll_number, []))
 
-    def sections_for_subject(self, subject_code: str) -> List[Section]:
-        return [s for s in self.sections.values() if s.subject_code == subject_code]
-
-    def get_section(self, section_id: int) -> Section:
-        return self.sections[section_id]
-
-    def add_section(self, subject_code: str, label: str, teacher_id: int, room: str,
-                     capacity: int, meetings: List[Meeting]) -> Section:
-        if subject_code not in self.subjects:
-            raise ValueError(f"Unknown subject {subject_code}")
-        if teacher_id not in self.teachers:
-            raise ValueError(f"Unknown teacher {teacher_id}")
-        new_id = (max(self.sections.keys()) + 1) if self.sections else 0
-        section = Section(id=new_id, subject_code=subject_code, label=label, teacher_id=teacher_id,
-                           room=room, capacity=capacity, meetings=meetings)
-        self.sections[new_id] = section
-        return section
-
-    def update_section(self, section_id: int, subject_code: Optional[str] = None, label: Optional[str] = None,
-                        teacher_id: Optional[int] = None, room: Optional[str] = None,
-                        capacity: Optional[int] = None, meetings: Optional[List[Meeting]] = None) -> Section:
-        section = self.sections[section_id]
+    # ── Sections (concrete teacher/time timetable data) ─────────────────────
+    def list_sections(self, subject_code: Optional[str] = None) -> List[Section]:
+        sections = list(self.sections.values())
         if subject_code is not None:
-            if subject_code not in self.subjects:
-                raise ValueError(f"Unknown subject {subject_code}")
-            section.subject_code = subject_code
-        if label is not None:
-            section.label = label
-        if teacher_id is not None:
-            if teacher_id not in self.teachers:
-                raise ValueError(f"Unknown teacher {teacher_id}")
-            section.teacher_id = teacher_id
-        if room is not None:
-            section.room = room
-        if capacity is not None:
-            section.capacity = capacity
-        if meetings is not None:
-            section.meetings = meetings
+            sections = [s for s in sections if s.subject_code == subject_code]
+        return sections
+
+    def get_section(self, section_id: int) -> Optional[Section]:
+        return self.sections.get(section_id)
+
+    def add_section(self, section: Section) -> Section:
+        if section.id is None:
+            section.id = self._next_section_id
+        self._next_section_id = max(self._next_section_id, section.id + 1)
+        self.sections[section.id] = section
         return section
 
     def delete_section(self, section_id: int) -> None:
-        del self.sections[section_id]
+        self.sections.pop(section_id, None)
 
-    # ── Time slots (abstract, student-facing grid) ────────────────────────
-    def list_time_slots(self) -> List[TimeSlot]:
-        return self.time_slots
+    # ── Generation runs (semester-scoped, product decision #2) ─────────────
+    def create_run(self, semester: int) -> GenerationRun:
+        run = GenerationRun(id=self._next_run_id, semester=semester)
+        self.runs[run.id] = run
+        self._next_run_id += 1
+        return run
 
-    # ── Preferences ────────────────────────────────────────────────────────
-    def get_ts_prefs(self, student_id: int) -> Dict[str, int]:
-        return self.student_ts_prefs.get(student_id, {})
+    def get_run(self, run_id: int) -> Optional[GenerationRun]:
+        return self.runs.get(run_id)
 
-    def set_ts_prefs(self, student_id: int, prefs: Dict[str, int]) -> None:
-        self.student_ts_prefs[student_id] = prefs
-
-    def get_faculty_prefs(self, student_id: int) -> Dict[str, Dict[int, int]]:
-        return self.student_faculty_prefs.get(student_id, {})
-
-    def set_faculty_prefs(self, student_id: int, prefs: Dict[str, Dict[int, int]]) -> None:
-        self.student_faculty_prefs[student_id] = prefs
-
-    # ── Solver results ─────────────────────────────────────────────────────
-    def get_last_result(self) -> dict:
-        return self.last_result
-
-    def set_last_result(self, result: dict) -> None:
-        self.last_result = result
+    def list_runs(self) -> List[GenerationRun]:
+        return list(self.runs.values())
 
 
 # ── Store access ──────────────────────────────────────────────────────────
-# A single process-wide instance, lazily seeded on first use. This is the
-# one place a future SQLite-backed store would plug in: swap what
-# get_store() returns/constructs, and every api/ route (which only ever
-# receives a store via this function) keeps working unchanged.
+# A single process-wide instance. This is the one place a future DB-backed
+# store would plug in: swap what get_store() returns/constructs, and every
+# api/ route (which only ever receives a store via this function) keeps
+# working unchanged.
 _default_store: Optional[InMemoryStore] = None
 
 
 def get_store() -> InMemoryStore:
     global _default_store
     if _default_store is None:
-        from data.seed import build_default_store
-        _default_store = build_default_store()
+        _default_store = InMemoryStore()
     return _default_store
+
+
+def reset_store() -> None:
+    """Reset the process-wide store. Mainly useful for tests."""
+    global _default_store
+    _default_store = None
