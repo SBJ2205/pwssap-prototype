@@ -16,7 +16,7 @@ picking this project up without prior conversation context.
 - [x] Phase 7: Faculty preference handling
 - [x] Phase 8: Section generation and timetable preparation
 - [x] Phase 9: Solver objective with teacher load balancing
-- [ ] Phase 10: Published result + admin override flow
+- [x] Phase 10: Published result + admin override flow
 - [ ] Phase 11: Student and teacher timetable views
 
 ## Phase 1 — what exists now
@@ -439,32 +439,69 @@ Backend (`backend/`):
     assigned, run_status=published).
 - Full regression: **181/181 checks across 15 suites pass**.
 
-## Next phase (Phase 10)
+## Phase 10 -- what exists now
 
-Published result + admin override flow -- the solver result is already
-auto-published after Phase 9; Phase 10 adds the manual override tools
-the admin needs to refine the published timetable without re-running
-the solver (product decision #13):
-- **Section membership overrides** -- `POST /admin/sections/{id}/enroll`
-  and `DELETE /admin/sections/{id}/students/{roll_number}`: add/remove
-  students from a section post-publication.
-- **Teacher reassignment override** -- `PUT /admin/sections/{id}/teacher`:
-  change the teacher on a published section (admin can reassign; the
-  solver result is the starting point, not the final word).
-- **Capacity override** -- `PUT /admin/sections/{id}/capacity`: the
-  admin can raise or lower the capacity ceiling after publication
-  (product decision #5).
-- **Conflict detection** -- when the admin manually moves a student or
-  teacher, the API should warn if this creates a slot clash or exceeds
-  capacity, but still allow the override (the admin knows context the
-  solver doesn't).
-- **Student assignment lookup** -- `GET /students/{roll}/sections`:
-  which sections is this student enrolled in (used by Phase 11's
-  student timetable view).
-- **Store change** -- `store.student_section_assignments` (already
-  initialised by Phase 9's service layer) needs proper CRUD methods
-  instead of direct dict access: `enroll_student`, `unenroll_student`,
-  `get_student_sections`.
-- **Tests** -- `tests/test_api_phase10.py`: enroll/unenroll round-trip,
-  capacity enforcement warnings, teacher reassignment, conflict warning
-  on slot clash.
+Backend (`backend/`):
+- `data/store.py` additions:
+  - `student_section_assignments: Dict[str, Dict[str, int]]` is now a
+    proper `__init__` attribute (previously Phase 9 wrote to it via a
+    `hasattr/setattr` workaround -- cleaned up).
+  - `get_student_sections(roll_number)` -- subject_code -> section_id.
+  - `enroll_student(roll, subject_code, section_id)` -- add/replace.
+  - `unenroll_student(roll, subject_code) -> bool`.
+  - `enrolled_students_for_section(section_id) -> List[str]`.
+  - `current_enrollment_count(section_id) -> int`.
+  - `slot_keys_for_student(roll)` -- for student clash detection.
+  - `slot_keys_for_teacher(teacher_id, exclude_section_id)` -- for
+    teacher double-booking detection.
+  - `solver/service.py` updated to use `store.enroll_student` instead
+    of the old direct dict write.
+- `api/overrides.py` -- two routers:
+  - `admin_router` (prefix `/admin/sections`, admin-only):
+    - `POST /{section_id}/enroll` -- enroll a student; warns on
+      capacity overflow and slot clash but always allows override.
+    - `DELETE /{section_id}/students/{roll_number}` -- unenroll.
+    - `PUT /{section_id}/teacher` -- reassign teacher; warns on
+      capability gap and double-booking.
+    - `PUT /{section_id}/capacity` -- override capacity ceiling; warns
+      if new value is below current enrollment count.
+  - `student_router` (prefix `/students`, no admin required):
+    - `GET /{roll_number}/sections` -- personalized timetable: each
+      entry has subject_code, subject_name, section_label, teacher_id,
+      teacher_name, meetings[slot_key]. Returns empty timetable if the
+      solver has not run yet.
+  - All four override endpoints: warn on conflicts but ALLOW (product
+    decision #13: admin intent takes precedence).
+- Tests: `tests/test_api_phase10.py` (37/37 checks): student sections
+  before/after solve, enroll success/404/role, capacity overflow warning,
+  unenroll success/404, teacher reassign success/capability-warning/
+  double-booking/non-capable-override, capacity increase/decrease-warning.
+- Full regression: **218/218 checks across 16 suites pass**.
+
+## Next phase (Phase 11)
+
+Student and teacher timetable views -- the final phase, making the
+results accessible to the two non-admin roles (product decision #15).
+
+Student view:
+- `GET /students/{roll}/sections` already exists (Phase 10); Phase 11
+  polish: ensure the response includes the full slot time ranges
+  (start_time, end_time, day) from the canonical grid so the frontend
+  can render a grid without another API call.
+- No new API endpoint needed -- extend the existing response shape.
+
+Teacher view:
+- `GET /teachers/{teacher_id}/timetable` -- new endpoint:
+  - All sections the teacher is assigned to (across all runs, or
+    scoped to ?run_id=).
+  - For each section: subject_code, subject_name, section_label,
+    meetings with full slot detail, enrolled student list.
+- No admin role required (teachers access their own data).
+
+Published run summary:
+- `GET /admin/runs/{run_id}/summary` -- single call that returns the
+  full published timetable: all sections with teacher, students,
+  and slot detail -- used by admin for a high-level review.
+
+Tests: `tests/test_api_phase11.py`: student timetable includes slot
+times, teacher timetable correct shape and data, run summary shape.

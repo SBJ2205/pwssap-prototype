@@ -165,10 +165,8 @@ def _write_assignments_to_store(
         # is safer if the store implementation changes later).
         store.sections[sid] = section
 
-    # Persist student-section assignments.
-    # Store as a flat dict on the store for Phase 10/11 to read.
-    if not hasattr(store, "student_section_assignments"):
-        store.student_section_assignments: Dict[str, Dict[str, int]] = {}
-
+    # Persist student-section assignments via the store's proper CRUD methods.
     for roll, sub_sid_map in result.student_section_assignments.items():
-        store.student_section_assignments.setdefault(roll, {}).update(sub_sid_map)
+        for subject_code, section_id in sub_sid_map.items():
+            store.enroll_student(roll, subject_code, section_id)
+

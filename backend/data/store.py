@@ -59,6 +59,11 @@ class InMemoryStore:
         self.runs: Dict[int, GenerationRun] = {}
         self._next_run_id: int = 0
 
+        # roll_number -> {subject_code -> section_id}.
+        # Populated by solver/service.py after solving; refined by Phase 10
+        # admin override endpoints (enroll_student / unenroll_student).
+        self.student_section_assignments: Dict[str, Dict[str, int]] = {}
+
     # ── Time slots (fixed, structural) ─────────────────────────────────────
     def list_time_slots(self) -> List[TimeSlot]:
         return self.time_slots
@@ -293,6 +298,77 @@ class InMemoryStore:
         run = self.runs[run_id]
         run.choice_tag_configs = list(configs)
         return run
+
+    # ── Student-section enrollment (Phase 10) ─────────────────────────────
+
+    def get_student_sections(self, roll_number: str) -> Dict[str, int]:
+        """subject_code -> section_id mapping for one student.
+
+        Returns an empty dict if the student has no assignments yet (solver
+        has not run, or student was added post-solving)."""
+        return dict(self.student_section_assignments.get(roll_number, {}))
+
+    def enroll_student(
+        self, roll_number: str, subject_code: str, section_id: int
+    ) -> None:
+        """Assign a student to a section for one subject.
+
+        Replaces any prior assignment for the same subject (one section
+        per student per subject at a time)."""
+        self.student_section_assignments.setdefault(roll_number, {})[subject_code] = section_id
+
+    def unenroll_student(self, roll_number: str, subject_code: str) -> bool:
+        """Remove a student's section assignment for a subject.
+
+        Returns True if an assignment existed and was removed, False otherwise."""
+        sub_map = self.student_section_assignments.get(roll_number, {})
+        if subject_code in sub_map:
+            del sub_map[subject_code]
+            return True
+        return False
+
+    def enrolled_students_for_section(self, section_id: int) -> List[str]:
+        """Roll numbers of all students currently enrolled in section_id."""
+        return [
+            roll
+            for roll, sub_map in self.student_section_assignments.items()
+            if section_id in sub_map.values()
+        ]
+
+    def current_enrollment_count(self, section_id: int) -> int:
+        """Current enrolled headcount for a section."""
+        return sum(
+            1 for sub_map in self.student_section_assignments.values()
+            if section_id in sub_map.values()
+        )
+
+    def slot_keys_for_student(self, roll_number: str) -> List[str]:
+        """Slot keys occupied by every section the student is enrolled in.
+
+        Used for student-level conflict detection: if the admin moves a
+        student into a section meeting at a slot already occupied by another
+        of their sections, we warn (but still allow the override)."""
+        occupied: List[str] = []
+        for section_id in self.get_student_sections(roll_number).values():
+            section = self.get_section(section_id)
+            if section:
+                occupied.extend(m.slot_key for m in section.meetings if m.slot_key)
+        return occupied
+
+    def slot_keys_for_teacher(
+        self, teacher_id: str, exclude_section_id: Optional[int] = None
+    ) -> List[str]:
+        """Slot keys occupied by every section the teacher is assigned to.
+
+        Used for teacher double-booking detection when the admin reassigns
+        a teacher post-publication.  Pass exclude_section_id to omit the
+        section currently being reassigned (otherwise the teacher's current
+        slot would always clash with itself)."""
+        occupied: List[str] = []
+        for section in self.sections.values():
+            if section.teacher_id == teacher_id and section.id != exclude_section_id:
+                occupied.extend(m.slot_key for m in section.meetings if m.slot_key)
+        return occupied
 
 
 # ── Store access ──────────────────────────────────────────────────────────
