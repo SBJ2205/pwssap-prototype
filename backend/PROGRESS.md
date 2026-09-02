@@ -10,7 +10,7 @@ picking this project up without prior conversation context.
 - [x] Phase 1: Data model and validation
 - [x] Phase 2: Subject CSV + admin choice-tag configuration
 - [x] Phase 3: Student CSV import and mapping
-- [ ] Phase 4: Teacher CSV import and subject-capability mapping
+- [x] Phase 4: Teacher CSV import and subject-capability mapping
 - [ ] Phase 5: Teacher availability management
 - [ ] Phase 6: Student preference submission and validation
 - [ ] Phase 7: Faculty preference handling
@@ -139,6 +139,45 @@ Backend (`backend/`):
   successful import + choices round-trip, and the semester-mismatch
   rejection).
 
+## Phase 4 — what exists now
+
+Backend (`backend/`):
+- `ingestion/teachers_csv.py` — `parse_teachers_csv(content: str,
+  known_subject_codes: Optional[Set[str]] = None) -> TeacherCsvResult`.
+  Uses plain `csv.reader` (not `DictReader`) because teacher CSV rows
+  are variable-width: `teacher_id, teacher_name`, then zero or more
+  subject-code cells. Every non-empty cell after the first two becomes
+  a capability — blank cells in between are skipped, not treated as an
+  end-of-row marker (tested explicitly with a row like
+  `T002,Prof. Mehta,IT301,,IT303` → capabilities `[IT301, IT303]`).
+  Validations: header's first two columns must be `teacher_id,
+  teacher_name`; blank rows are skipped; duplicate `teacher_id` in the
+  file is a row error; a teacher listing the same subject_code twice is
+  a row error; when `known_subject_codes` is provided, any referenced
+  subject_code not in it is a **hard** row error (resolved the Phase 3
+  handoff's open question this way: unlike Phase 2's tag/subject
+  warning, teacher import normally runs *after* subject import per the
+  priority order, so an unknown code here is almost always a typo, not
+  a legitimate ordering gap).
+- `api/teachers.py`:
+  - `GET /teachers` — open to any role.
+  - `POST /admin/teachers/import` — admin-only, multipart CSV, same
+    all-or-nothing policy as Phases 2-3. Passes the current subject
+    catalog's codes as `known_subject_codes`, so importing teachers
+    before subjects exist correctly fails every row.
+  - `GET /admin/teachers/{teacher_id}/capabilities` — admin-only, lists
+    a teacher's subject codes.
+  - `GET /admin/subjects/{subject_code}/teachers` — admin-only, the
+    reverse lookup (which teachers can teach this subject) — added
+    now because Phase 7 (faculty preference) will need exactly this to
+    show students their eligible-teacher choices per subject.
+- Tests: `tests/test_teachers_csv.py` (11 checks on the parser directly,
+  including the ragged-row/blank-cell-skipping behavior) and
+  `tests/test_api_phase4.py` (6 HTTP-level checks via `TestClient`:
+  role-gating, rejecting teachers when subjects aren't imported yet,
+  a full successful import + capability/reverse-lookup round-trip, 404s
+  on unknown teacher/subject, and duplicate-teacher_id rejection).
+
 ## What was intentionally removed
 
 The previous prototype ("blind abstract time-slot rating" model, no CSV
@@ -172,28 +211,26 @@ Phase 2+ introduces (subject list/choice-tag config UI in Phase 2,
 CSV import UIs in Phase 3-4, etc.) — do not treat the current frontend
 as a regression, it simply hasn't been touched yet.
 
-## Next phase (Phase 4)
+## Next phase (Phase 5)
 
-Teacher CSV import and subject-capability mapping (product decision #8):
-- CSV parser (`ingestion/teachers_csv.py`) for `teacher_id,
-  teacher_name, <subject_code>, <subject_code>, ...` — the first two
-  columns are fixed/mandatory, and every non-empty cell after that is a
-  subject code the teacher can teach (variable-width rows, unlike the
-  fixed-column subject/student CSVs). `csv.reader` (not `DictReader`)
-  is the natural fit here since the "columns" after the first two are
-  positionally unbounded.
-- Row-level validation: `teacher_id`/`teacher_name` required (reuse
-  `domain.validation.validate_teacher`); every referenced subject_code
-  should exist in the catalog (decide: hard row error, or a warning if
-  teachers might be uploaded before all subjects exist — Phase 2 chose
-  "warn, don't block" for tag/subject mismatches, so lean the same way
-  unless there's a good reason not to); duplicate teacher_id within the
-  file.
-- Store via `InMemoryStore.upsert_teacher` +
-  `add_teacher_capability(teacher_id, subject_code)` (both already
-  present, unused until now).
-- API: `POST /admin/teachers/import` (multipart CSV, admin-only,
-  all-or-nothing like Phases 2-3) and `GET /teachers` (open) +
-  `GET /admin/teachers/{teacher_id}/capabilities` (admin-only, lists
-  the subjects a teacher can teach — mirrors Phase 3's
-  `.../choices` sanity-check endpoint).
+Teacher availability management (product decision #9) — this is a hard
+constraint the admin sets manually, NOT a CSV import:
+- Store already has `set_teacher_availability(teacher_id, slot_key,
+  available)` / `is_teacher_available(...)` / `get_teacher_availability(...)`,
+  defaulting to available=True for any slot the admin hasn't explicitly
+  blocked — confirm this default still makes sense once there's a real
+  UI behind it (the alternative, defaulting to unavailable until
+  explicitly marked yes, would force the admin to click through every
+  cell for every teacher before anything is schedulable; the current
+  default assumes most slots are fine and admin only marks exceptions).
+- API: `GET /admin/teachers/{teacher_id}/availability` (full grid: all
+  20 canonical slots from `domain.timeslots.build_canonical_grid()`,
+  each with its current available true/false) and `PUT
+  /admin/teachers/{teacher_id}/availability` (bulk-set one or more
+  slot_key -> available pairs in one call, since a real admin UI will
+  submit a whole grid's worth of toggles at once, not one PUT per cell).
+- Validate `slot_key` actually exists in the canonical grid and
+  `teacher_id` exists before writing.
+- Nothing here touches CSV ingestion or the solver yet — it's pure
+  admin-managed state that Phase 9's solver will later read as a hard
+  constraint.
