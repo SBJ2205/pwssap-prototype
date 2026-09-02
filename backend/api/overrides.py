@@ -261,35 +261,52 @@ def get_student_sections(
 ):
     """Return a student's full personalised timetable.
 
-    Resolves each section assignment to its full section detail (subject,
-    teacher, meeting slots, label).  Used by Phase 11's student timetable
-    view.  No admin role required (students access their own data).
+    Each meeting in the response includes the full canonical slot detail
+    (day, start_time, end_time) so the frontend can render a weekly grid
+    without a separate /timeslots call (product decision #15).
+
+    No admin role required — students access their own data.
     """
     student = store.get_student(roll_number)
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    assignments = store.get_student_sections(roll_number)  # {subject_code: section_id}
+    # Build a lookup from slot_key -> TimeSlot for enrichment.
+    slot_lookup = {s.key: s for s in store.list_time_slots()}
+
+    def _enrich_meeting(slot_key: Optional[str]) -> dict:
+        if not slot_key:
+            return {"slot_key": None, "day": None, "start_time": None, "end_time": None}
+        slot = slot_lookup.get(slot_key)
+        return {
+            "slot_key": slot_key,
+            "day": slot.day if slot else None,
+            "start_time": slot.start_time if slot else None,
+            "end_time": slot.end_time if slot else None,
+        }
+
+    assignments = store.get_student_sections(roll_number)
     timetable = []
     for subject_code, section_id in assignments.items():
         section = store.get_section(section_id)
         if section is None:
             continue
         subject = store.get_subject(subject_code)
+        teacher = store.get_teacher(section.teacher_id) if section.teacher_id else None
         timetable.append({
             "subject_code": subject_code,
             "subject_name": subject.subject_name if subject else None,
             "subject_tag": subject.subject_tag if subject else None,
+            "subject_type": subject.type.value if subject else None,
             "section_id": section_id,
             "section_label": section.label,
             "teacher_id": section.teacher_id,
-            "teacher_name": (
-                store.get_teacher(section.teacher_id).teacher_name
-                if section.teacher_id and store.get_teacher(section.teacher_id)
-                else None
-            ),
-            "meetings": [{"slot_key": m.slot_key or None} for m in section.meetings],
+            "teacher_name": teacher.teacher_name if teacher else None,
+            "meetings": [_enrich_meeting(m.slot_key) for m in section.meetings],
         })
+
+    # Sort timetable by subject_code for stable ordering.
+    timetable.sort(key=lambda e: e["subject_code"])
 
     return {
         "roll_number": roll_number,
@@ -297,3 +314,4 @@ def get_student_sections(
         "semester": student.semester,
         "timetable": timetable,
     }
+

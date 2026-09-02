@@ -5,7 +5,9 @@ capability views — mirrors api/subjects.py and api/students.py).
 CSV parsing lives in ingestion/teachers_csv.py; this module only handles
 HTTP framing and talks to the store.
 """
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
@@ -73,4 +75,72 @@ async def import_teachers(file: UploadFile = File(...), store: InMemoryStore = D
         "status": "imported",
         "count": len(result.teachers),
         "capabilities": total_capabilities,
+    }
+
+
+@router.get("/teachers/{teacher_id}/timetable")
+def get_teacher_timetable(
+    teacher_id: str,
+    run_id: Optional[int] = Query(default=None, description="Scope to a specific run"),
+    store: InMemoryStore = Depends(get_store),
+):
+    """Return a teacher's full assigned timetable.
+
+    Each section entry includes subject detail, the enriched meeting slots
+    (day, start_time, end_time), and the enrolled student roster.
+
+    No admin role required — teachers access their own timetable data.
+    Optionally scoped to a single run via ?run_id=.
+    """
+    teacher = store.get_teacher(teacher_id)
+    if teacher is None:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    # Build slot lookup for time enrichment.
+    slot_lookup = {s.key: s for s in store.list_time_slots()}
+
+    def _enrich_meeting(slot_key: Optional[str]) -> dict:
+        if not slot_key:
+            return {"slot_key": None, "day": None, "start_time": None, "end_time": None}
+        slot = slot_lookup.get(slot_key)
+        return {
+            "slot_key": slot_key,
+            "day": slot.day if slot else None,
+            "start_time": slot.start_time if slot else None,
+            "end_time": slot.end_time if slot else None,
+        }
+
+    # Find all sections assigned to this teacher (optionally run-scoped).
+    all_sections = (
+        store.list_sections_for_run(run_id)
+        if run_id is not None
+        else list(store.sections.values())
+    )
+    assigned_sections = [s for s in all_sections if s.teacher_id == teacher_id]
+
+    schedule = []
+    for section in assigned_sections:
+        subject = store.get_subject(section.subject_code)
+        enrolled = store.enrolled_students_for_section(section.id)
+        schedule.append({
+            "section_id": section.id,
+            "run_id": section.run_id,
+            "subject_code": section.subject_code,
+            "subject_name": subject.subject_name if subject else None,
+            "subject_type": subject.type.value if subject else None,
+            "section_label": section.label,
+            "capacity": section.capacity,
+            "enrolled_count": len(enrolled),
+            "enrolled_students": enrolled,
+            "meetings": [_enrich_meeting(m.slot_key) for m in section.meetings],
+        })
+
+    # Sort by section label for stable ordering.
+    schedule.sort(key=lambda e: e["section_label"])
+
+    return {
+        "teacher_id": teacher_id,
+        "teacher_name": teacher.teacher_name,
+        "section_count": len(schedule),
+        "schedule": schedule,
     }

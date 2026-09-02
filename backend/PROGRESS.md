@@ -17,7 +17,7 @@ picking this project up without prior conversation context.
 - [x] Phase 8: Section generation and timetable preparation
 - [x] Phase 9: Solver objective with teacher load balancing
 - [x] Phase 10: Published result + admin override flow
-- [ ] Phase 11: Student and teacher timetable views
+- [x] Phase 11: Student and teacher timetable views
 
 ## Phase 1 — what exists now
 
@@ -478,30 +478,58 @@ Backend (`backend/`):
   double-booking/non-capable-override, capacity increase/decrease-warning.
 - Full regression: **218/218 checks across 16 suites pass**.
 
-## Next phase (Phase 11)
+## Phase 11 -- what exists now
 
-Student and teacher timetable views -- the final phase, making the
-results accessible to the two non-admin roles (product decision #15).
+Backend (`backend/`):
+- `api/overrides.py` -- `GET /students/{roll_number}/sections` enriched:
+  - Each meeting now includes `day`, `start_time`, `end_time` from the
+    canonical slot grid (no second API call needed by the frontend).
+  - Added `subject_type` field to each timetable entry.
+  - Response entries are sorted by `subject_code` for stable ordering.
+- `api/teachers.py` -- new endpoint `GET /teachers/{teacher_id}/timetable`:
+  - No admin role required (teacher-facing).
+  - Returns `teacher_id`, `teacher_name`, `section_count`, and
+    `schedule: List[section_entry]`.
+  - Each entry: `section_id`, `run_id`, `subject_code`, `subject_name`,
+    `subject_type`, `section_label`, `capacity`, `enrolled_count`,
+    `enrolled_students`, `meetings` (with full day/start/end enrichment).
+  - Optional `?run_id=` query param scopes results to one run.
+  - Schedule sorted by `section_label`.
+- `api/sections.py` -- new endpoint `GET /admin/runs/{run_id}/summary`:
+  - Admin-only; single-call snapshot of the entire published timetable.
+  - Returns `run_id`, `semester`, `run_status`, `section_count`,
+    `sections` (full detail with subject name, teacher name, enrollment,
+    enriched meetings), and `weekly_grid`.
+  - `weekly_grid` is `{day: [entry, ...]}` sorted by `start_time` within
+    each day -- one entry per meeting per section, designed for a
+    calendar/grid UI component.
+  - Also adds `_section_to_summary_dict` helper shared between list and
+    grid views.
+- Tests: `tests/test_api_phase11.py` (55/55 checks): student timetable
+  slot enrichment, `start_time` HH:MM format, `subject_type` field,
+  sorted output; teacher timetable 404/empty/after-solve/run-scoping/
+  enrolled_students/slot-enrichment/sort order; run summary
+  404/role/content/weekly-grid structure/entry shape.
+- Full regression: **273/273 checks across 17 suites pass**.
 
-Student view:
-- `GET /students/{roll}/sections` already exists (Phase 10); Phase 11
-  polish: ensure the response includes the full slot time ranges
-  (start_time, end_time, day) from the canonical grid so the frontend
-  can render a grid without another API call.
-- No new API endpoint needed -- extend the existing response shape.
+## Backend complete
 
-Teacher view:
-- `GET /teachers/{teacher_id}/timetable` -- new endpoint:
-  - All sections the teacher is assigned to (across all runs, or
-    scoped to ?run_id=).
-  - For each section: subject_code, subject_name, section_label,
-    meetings with full slot detail, enrolled student list.
-- No admin role required (teachers access their own data).
+All 11 backend phases are implemented and tested. The backend exposes a
+complete REST API for the full department timetable generation workflow:
 
-Published run summary:
-- `GET /admin/runs/{run_id}/summary` -- single call that returns the
-  full published timetable: all sections with teacher, students,
-  and slot detail -- used by admin for a high-level review.
+  Phase 1  Data model + slot grid
+  Phase 2  Subject CSV import + admin choice-tag config
+  Phase 3  Student CSV import
+  Phase 4  Teacher CSV import + capability mapping
+  Phase 5  Teacher availability (hard constraint data)
+  Phase 6  Student time-slot preference submission
+  Phase 7  Student faculty preference submission
+  Phase 8  Section generation from the subject catalog
+  Phase 9  CP-SAT solver (3-level objective + 4 hard constraints)
+  Phase 10 Admin override flow post-publication
+  Phase 11 Student + teacher + admin timetable views
 
-Tests: `tests/test_api_phase11.py`: student timetable includes slot
-times, teacher timetable correct shape and data, run summary shape.
+The natural next step is the frontend (React or similar) consuming these
+endpoints to provide a visual timetable UI. The backend API is fully
+documented via FastAPI's auto-generated /docs (Swagger UI) at runtime.
+

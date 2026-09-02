@@ -14,9 +14,14 @@ Routes:
   GET /admin/runs/{run_id}/sections/{section_id}
       Fetch a single section by ID (must belong to the specified run).
 
+  GET /admin/runs/{run_id}/summary      [Phase 11]
+      Full published timetable snapshot: all sections with enriched slot
+      detail, teacher names, enrollment counts, plus a weekly grid view
+      keyed by day for admin review.
+
 All endpoints are admin-only (product decision #14 role model).
 """
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -31,7 +36,7 @@ router = APIRouter(
 )
 
 
-# ── Serialisation helper ──────────────────────────────────────────────────
+# ── Serialisation helpers ─────────────────────────────────────────────────
 
 def _section_to_dict(section: Section) -> dict:
     return {
@@ -45,6 +50,39 @@ def _section_to_dict(section: Section) -> dict:
             {"slot_key": m.slot_key or None}
             for m in section.meetings
         ],
+    }
+
+
+def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
+    """Full section detail for the run summary view."""
+    slot_lookup = {s.key: s for s in store.list_time_slots()}
+    subject = store.get_subject(section.subject_code)
+    teacher = store.get_teacher(section.teacher_id) if section.teacher_id else None
+    enrolled = store.enrolled_students_for_section(section.id)
+
+    enriched_meetings = []
+    for m in section.meetings:
+        sk = m.slot_key
+        slot = slot_lookup.get(sk) if sk else None
+        enriched_meetings.append({
+            "slot_key": sk or None,
+            "day": slot.day if slot else None,
+            "start_time": slot.start_time if slot else None,
+            "end_time": slot.end_time if slot else None,
+        })
+
+    return {
+        "id": section.id,
+        "subject_code": section.subject_code,
+        "subject_name": subject.subject_name if subject else None,
+        "subject_type": subject.type.value if subject else None,
+        "label": section.label,
+        "teacher_id": section.teacher_id,
+        "teacher_name": teacher.teacher_name if teacher else None,
+        "capacity": section.capacity,
+        "enrolled_count": len(enrolled),
+        "enrolled_students": enrolled,
+        "meetings": enriched_meetings,
     }
 
 
@@ -153,3 +191,57 @@ def get_section(run_id: int, section_id: int, store: InMemoryStore = Depends(get
         raise HTTPException(status_code=404, detail="Section not found in this run")
 
     return _section_to_dict(section)
+
+
+@router.get("/{run_id}/summary")
+def get_run_summary(run_id: int, store: InMemoryStore = Depends(get_store)):
+    """Full admin snapshot of a published timetable.
+
+    Returns run metadata, all sections with enriched slot detail (day,
+    start_time, end_time), teacher name, enrollment counts, and a
+    weekly grid view keyed by day for quick admin review.
+
+    The weekly_grid field is a dict: {day -> [{section info}]}, ordered
+    by start_time within each day.
+    """
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    sections = store.list_sections_for_run(run_id)
+    section_dicts = [_section_to_summary_dict(s, store) for s in sections]
+
+    # Build weekly grid: day -> [section_entry].
+    # Each section contributes one entry per meeting.
+    weekly_grid: Dict[str, List[dict]] = {}
+    for sd in section_dicts:
+        for meeting in sd["meetings"]:
+            day = meeting.get("day")
+            if not day:
+                continue
+            entry = {
+                "section_id": sd["id"],
+                "section_label": sd["label"],
+                "subject_code": sd["subject_code"],
+                "subject_name": sd["subject_name"],
+                "teacher_id": sd["teacher_id"],
+                "teacher_name": sd["teacher_name"],
+                "enrolled_count": sd["enrolled_count"],
+                "slot_key": meeting["slot_key"],
+                "start_time": meeting["start_time"],
+                "end_time": meeting["end_time"],
+            }
+            weekly_grid.setdefault(day, []).append(entry)
+
+    # Sort each day's entries by start_time.
+    for day_entries in weekly_grid.values():
+        day_entries.sort(key=lambda e: e.get("start_time") or "")
+
+    return {
+        "run_id": run_id,
+        "semester": run.semester,
+        "run_status": run.status.value,
+        "section_count": len(sections),
+        "sections": section_dicts,
+        "weekly_grid": weekly_grid,
+    }
