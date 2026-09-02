@@ -85,6 +85,16 @@ def validate_slot_for_subject_type(slot: TimeSlot, subject_type: SubjectType) ->
     return errors
 
 
+def validate_slot_keys(slot_keys: Iterable[str], valid_slot_keys: Iterable[str]) -> List[str]:
+    """Used by teacher-availability updates (product decision #9) to
+    reject any slot_key that isn't one of the canonical grid's keys
+    before writing anything."""
+    unknown = sorted(set(slot_keys) - set(valid_slot_keys))
+    if unknown:
+        return [f"Unknown slot_key(s): {', '.join(unknown)}"]
+    return []
+
+
 def validate_choice_tag_configs(configs: Iterable[ChoiceTagConfig]) -> List[str]:
     """Structural validation for a run's choice-tag configuration
     (product decision #3): tag names must be non-empty and numeric

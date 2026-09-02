@@ -11,7 +11,7 @@ picking this project up without prior conversation context.
 - [x] Phase 2: Subject CSV + admin choice-tag configuration
 - [x] Phase 3: Student CSV import and mapping
 - [x] Phase 4: Teacher CSV import and subject-capability mapping
-- [ ] Phase 5: Teacher availability management
+- [x] Phase 5: Teacher availability management
 - [ ] Phase 6: Student preference submission and validation
 - [ ] Phase 7: Faculty preference handling
 - [ ] Phase 8: Section generation and timetable preparation
@@ -178,6 +178,34 @@ Backend (`backend/`):
   a full successful import + capability/reverse-lookup round-trip, 404s
   on unknown teacher/subject, and duplicate-teacher_id rejection).
 
+## Phase 5 — what exists now
+
+Backend (`backend/`):
+- `domain/validation.py` gained `validate_slot_keys(slot_keys,
+  valid_slot_keys)` — rejects any slot_key not in the canonical grid,
+  reused by the availability endpoint below.
+- `api/availability.py` — admin-only routes nested under
+  `/admin/teachers/{teacher_id}/availability`:
+  - `GET` — returns all 20 canonical slots for that teacher, each with
+    its current `available` flag (defaults to `true` for anything the
+    admin hasn't explicitly blocked — see `InMemoryStore.
+    is_teacher_available`, unchanged from Phase 1).
+  - `PUT` — body `{"slots": {"<slot_key>": true/false, ...}}`, bulk-sets
+    one or more slots in a single call (a real admin UI submits a whole
+    grid's worth of toggles at once, not one request per cell). Rejects
+    the whole payload (400) if any `slot_key` isn't one of the 20
+    canonical keys, before writing anything.
+  - Both 404 if `teacher_id` doesn't exist.
+  - This is a **hard constraint**, not a preference — Phase 9's solver
+    must treat `available=False` as forbidden, never merely
+    undesirable (product decision #9).
+- Tests: `tests/test_api_phase5.py` (8 checks: a direct check of
+  `validate_slot_keys`, admin-role gating, 404s for unknown teacher on
+  both GET and PUT, confirming all 20 slots default to available,
+  blocking + persisting specific slots while leaving others untouched,
+  re-enabling a previously blocked slot, and rejecting an unknown
+  slot_key without partial writes).
+
 ## What was intentionally removed
 
 The previous prototype ("blind abstract time-slot rating" model, no CSV
@@ -211,26 +239,25 @@ Phase 2+ introduces (subject list/choice-tag config UI in Phase 2,
 CSV import UIs in Phase 3-4, etc.) — do not treat the current frontend
 as a regression, it simply hasn't been touched yet.
 
-## Next phase (Phase 5)
+## Next phase (Phase 6)
 
-Teacher availability management (product decision #9) — this is a hard
-constraint the admin sets manually, NOT a CSV import:
-- Store already has `set_teacher_availability(teacher_id, slot_key,
-  available)` / `is_teacher_available(...)` / `get_teacher_availability(...)`,
-  defaulting to available=True for any slot the admin hasn't explicitly
-  blocked — confirm this default still makes sense once there's a real
-  UI behind it (the alternative, defaulting to unavailable until
-  explicitly marked yes, would force the admin to click through every
-  cell for every teacher before anything is schedulable; the current
-  default assumes most slots are fine and admin only marks exceptions).
-- API: `GET /admin/teachers/{teacher_id}/availability` (full grid: all
-  20 canonical slots from `domain.timeslots.build_canonical_grid()`,
-  each with its current available true/false) and `PUT
-  /admin/teachers/{teacher_id}/availability` (bulk-set one or more
-  slot_key -> available pairs in one call, since a real admin UI will
-  submit a whole grid's worth of toggles at once, not one PUT per cell).
-- Validate `slot_key` actually exists in the canonical grid and
-  `teacher_id` exists before writing.
-- Nothing here touches CSV ingestion or the solver yet — it's pure
-  admin-managed state that Phase 9's solver will later read as a hard
-  constraint.
+Student preference submission and validation (product decision #10):
+- Students rate the canonical time-slot grid, excluding Monday's
+  blocked first slot (nothing can ever use it, so nothing should ask a
+  student to rate it). Add a 1-4 rating scale to `domain/enums.py`
+  analogous to the earlier prototype's (Preferred/Tolerable/Disliked/
+  Blocked; Blocked = hard "never schedule me here").
+- Validation is the interesting part: reject truly degenerate
+  submissions outright (empty, or overwhelmingly Blocked -- that would
+  make the student nearly unschedulable), but merely uninformative
+  ones (everything rated the same, or mostly low-preference) should
+  save with a warning, not be rejected -- the spec asks the app to
+  "ask students to reconsider", not lock them out. Put this logic in
+  `domain/validation.py` as a pure function returning
+  `(errors, warnings)` so it's unit-testable without any HTTP layer,
+  matching the CSV row-validator pattern from Phases 2-4.
+- Store: add `student_time_preferences` (roll_number -> slot_key ->
+  rating) with get/set methods; clear it in `delete_student`.
+- API: `GET/PUT /students/{roll_number}/time-preferences`, no admin
+  role required (students submit their own; no real auth in this
+  local prototype, product decision #14).
