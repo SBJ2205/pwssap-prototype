@@ -24,7 +24,7 @@ from domain.models import (
     Teacher,
     TeacherSubjectCapability,
 )
-from domain.timeslots import TimeSlot, build_canonical_grid
+from domain.timeslots import TimeSlot, build_canonical_grid, is_slot_usable
 
 
 class InMemoryStore:
@@ -43,6 +43,11 @@ class InMemoryStore:
 
         self.students: Dict[str, Student] = {}
         self.student_choice_selections: Dict[str, List[StudentChoiceSelection]] = {}
+        # roll_number -> slot_key -> rating (1-4, see domain.enums.PreferenceRating).
+        # Missing entries default to indifferent, not to any particular
+        # rating -- that default lives with whatever reads this (the
+        # solver, later), not here.
+        self.student_time_preferences: Dict[str, Dict[str, int]] = {}
 
         self.sections: Dict[int, Section] = {}
         self._next_section_id: int = 0
@@ -56,6 +61,12 @@ class InMemoryStore:
 
     def get_time_slot(self, key: str) -> Optional[TimeSlot]:
         return next((s for s in self.time_slots if s.key == key), None)
+
+    def list_ratable_time_slots(self) -> List[TimeSlot]:
+        """Slots a student can actually rate -- excludes Monday's first
+        slot, which is blocked for everything and would be meaningless
+        to ask a student to rate (product decision #4)."""
+        return [s for s in self.time_slots if is_slot_usable(s)]
 
     # ── Subjects ─────────────────────────────────────────────────────────────
     def list_subjects(self, semester: Optional[int] = None) -> List[Subject]:
@@ -132,6 +143,14 @@ class InMemoryStore:
     def delete_student(self, roll_number: str) -> None:
         self.students.pop(roll_number, None)
         self.student_choice_selections.pop(roll_number, None)
+        self.student_time_preferences.pop(roll_number, None)
+
+    # ── Student time-slot preferences ────────────────────────────────────
+    def get_time_preferences(self, roll_number: str) -> Dict[str, int]:
+        return dict(self.student_time_preferences.get(roll_number, {}))
+
+    def set_time_preferences(self, roll_number: str, ratings: Dict[str, int]) -> None:
+        self.student_time_preferences[roll_number] = dict(ratings)
 
     # ── Student choice selections (per-run) ─────────────────────────────────
     def set_student_choice_selections(

@@ -6,9 +6,10 @@ CSV import layers added in later phases (Phase 2-4), where every row of a
 CSV needs its own independent list of errors rather than a single
 raise-on-first-problem exception.
 """
-from typing import Iterable, List
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List
 
-from domain.enums import SubjectType, VALID_SEMESTERS
+from domain.enums import PreferenceRating, SubjectType, VALID_SEMESTERS
 from domain.models import ChoiceTagConfig, Student, Subject, Teacher
 from domain.timeslots import TimeSlot, is_slot_usable, slot_allows
 
@@ -118,3 +119,82 @@ def validate_choice_tag_configs(configs: Iterable[ChoiceTagConfig]) -> List[str]
         else:
             seen_values[cfg.numeric_value] = cfg.tag
     return errors
+
+
+# ── Student time-slot preference validation (product decision #10) ─────────
+# A student should never be able to save a matrix that's effectively empty
+# or uninformative. BLOCKED_REJECT_RATIO is a hard cutoff (rejected outright,
+# since near-total blocking makes scheduling that student nearly
+# impossible); the others are soft signals that only produce a warning so
+# the student can still save if they mean it.
+BLOCKED_REJECT_RATIO = 0.7
+LOW_PREFERENCE_WARN_RATIO = 0.8
+UNIFORM_WARN_MIN_RATED = 5
+
+
+@dataclass
+class PreferenceValidationResult:
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def is_valid(self) -> bool:
+        return len(self.errors) == 0
+
+
+def validate_time_slot_preferences(
+    ratings: Dict[str, int], ratable_slot_keys: Iterable[str]
+) -> PreferenceValidationResult:
+    errors: List[str] = []
+    warnings: List[str] = []
+    ratable_keys = set(ratable_slot_keys)
+
+    if not ratings:
+        errors.append(
+            "You haven't rated any time slots yet. Rate at least a few slots before saving."
+        )
+        return PreferenceValidationResult(errors=errors, warnings=warnings)
+
+    unknown_keys = sorted(set(ratings.keys()) - ratable_keys)
+    if unknown_keys:
+        errors.append(f"Unknown or unratable slot_key(s): {', '.join(unknown_keys)}")
+
+    valid_values = {r.value for r in PreferenceRating}
+    bad_values = sorted({str(v) for v in ratings.values() if v not in valid_values})
+    if bad_values:
+        errors.append(
+            f"Rating values must be one of {sorted(valid_values)}; got: {', '.join(bad_values)}"
+        )
+
+    if errors:
+        return PreferenceValidationResult(errors=errors, warnings=warnings)
+
+    total_ratable = len(ratable_keys)
+    rated_count = len(ratings)
+    blocked_count = sum(1 for v in ratings.values() if v == PreferenceRating.BLOCKED.value)
+    low_count = sum(
+        1 for v in ratings.values()
+        if v in (PreferenceRating.DISLIKED.value, PreferenceRating.BLOCKED.value)
+    )
+
+    if total_ratable and (blocked_count / total_ratable) > BLOCKED_REJECT_RATIO:
+        errors.append(
+            f"Too many slots are marked Blocked (more than {int(BLOCKED_REJECT_RATIO * 100)}% "
+            "of the week). This would make it nearly impossible to schedule you -- please "
+            "unblock some slots and try again."
+        )
+        return PreferenceValidationResult(errors=errors, warnings=warnings)
+
+    if rated_count and (low_count / rated_count) >= LOW_PREFERENCE_WARN_RATIO:
+        warnings.append(
+            "Most of your rated slots are marked Disliked or Blocked. Consider marking a few "
+            "more slots as Preferred or Tolerable so we can find you a better schedule."
+        )
+
+    if rated_count >= UNIFORM_WARN_MIN_RATED and len(set(ratings.values())) == 1:
+        warnings.append(
+            "You rated every slot the same. Try spreading your preferences across a few "
+            "different ratings so we know which times you actually prefer."
+        )
+
+    return PreferenceValidationResult(errors=errors, warnings=warnings)

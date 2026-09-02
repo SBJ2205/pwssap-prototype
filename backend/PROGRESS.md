@@ -12,7 +12,7 @@ picking this project up without prior conversation context.
 - [x] Phase 3: Student CSV import and mapping
 - [x] Phase 4: Teacher CSV import and subject-capability mapping
 - [x] Phase 5: Teacher availability management
-- [ ] Phase 6: Student preference submission and validation
+- [x] Phase 6: Student preference submission and validation
 - [ ] Phase 7: Faculty preference handling
 - [ ] Phase 8: Section generation and timetable preparation
 - [ ] Phase 9: Solver objective with teacher load balancing
@@ -206,6 +206,47 @@ Backend (`backend/`):
   re-enabling a previously blocked slot, and rejecting an unknown
   slot_key without partial writes).
 
+## Phase 6 — what exists now
+
+Backend (`backend/`):
+- `domain/enums.py` gained `PreferenceRating` (`PREFERRED=1, TOLERABLE=2,
+  DISLIKED=3, BLOCKED=4`) — BLOCKED is a hard "never schedule me here";
+  the rest is soft strength.
+- `domain/validation.py` gained `PreferenceValidationResult` (`errors`,
+  `warnings`, `is_valid`) and `validate_time_slot_preferences(ratings,
+  ratable_slot_keys)` implementing product decision #10's "don't allow
+  clearly useless preference matrices" rule with two severities:
+  - **rejected outright** (nothing saved): empty submission, an unknown
+    slot_key, an out-of-range rating value, or more than 70% of the
+    *whole ratable week* marked Blocked (would make that student
+    nearly unschedulable, not just badly scheduled);
+  - **saved with a warning**: 80%+ of what was actually rated is
+    Disliked/Blocked, or every rated slot got the same value across at
+    least 5 rated slots (both signal "not enough information to
+    prioritize this student's schedule well", per the spec's "ask
+    students to reconsider" requirement, without blocking them).
+- `data/store.py` gained `list_ratable_time_slots()` (the 19 canonical
+  slots excluding Monday's blocked first slot — there's no sense asking
+  a student to rate a slot nothing can ever use) and
+  `get_time_preferences`/`set_time_preferences`, keyed by `roll_number`.
+  `delete_student` now also clears stored preferences.
+- `api/preferences.py` — student-facing, no admin role required (no
+  real auth in this prototype, product decision #14):
+  - `GET /students/{roll_number}/time-preferences` — all 19 ratable
+    slots with the student's current rating (`null` if unrated).
+  - `PUT /students/{roll_number}/time-preferences` — body
+    `{"ratings": {"<slot_key>": 1-4, ...}}`; 400s with `errors` if
+    rejected outright, otherwise saves and returns `{"status":
+    "saved", "warnings": [...]}`.
+  - Both 404 if the roll_number doesn't exist.
+- Tests: `tests/test_preferences_validation.py` (9 checks directly on
+  `validate_time_slot_preferences`, including the exact ratio
+  boundaries) and `tests/test_api_phase6.py` (6 HTTP-level checks:
+  404 for unknown student, default-unrated grid shape, empty-payload
+  rejection, a well-spread submission saving cleanly, a mostly-blocked
+  submission being rejected AND leaving nothing saved, and a uniform
+  submission saving with a warning).
+
 ## What was intentionally removed
 
 The previous prototype ("blind abstract time-slot rating" model, no CSV
@@ -239,25 +280,35 @@ Phase 2+ introduces (subject list/choice-tag config UI in Phase 2,
 CSV import UIs in Phase 3-4, etc.) — do not treat the current frontend
 as a regression, it simply hasn't been touched yet.
 
-## Next phase (Phase 6)
+## Next phase (Phase 7)
 
-Student preference submission and validation (product decision #10):
-- Students rate the canonical time-slot grid, excluding Monday's
-  blocked first slot (nothing can ever use it, so nothing should ask a
-  student to rate it). Add a 1-4 rating scale to `domain/enums.py`
-  analogous to the earlier prototype's (Preferred/Tolerable/Disliked/
-  Blocked; Blocked = hard "never schedule me here").
-- Validation is the interesting part: reject truly degenerate
-  submissions outright (empty, or overwhelmingly Blocked -- that would
-  make the student nearly unschedulable), but merely uninformative
-  ones (everything rated the same, or mostly low-preference) should
-  save with a warning, not be rejected -- the spec asks the app to
-  "ask students to reconsider", not lock them out. Put this logic in
-  `domain/validation.py` as a pure function returning
-  `(errors, warnings)` so it's unit-testable without any HTTP layer,
-  matching the CSV row-validator pattern from Phases 2-4.
-- Store: add `student_time_preferences` (roll_number -> slot_key ->
-  rating) with get/set methods; clear it in `delete_student`.
-- API: `GET/PUT /students/{roll_number}/time-preferences`, no admin
-  role required (students submit their own; no real auth in this
-  local prototype, product decision #14).
+Faculty preference handling (product decision #11) — students rank
+eligible teachers for subjects that have more than one, and this signal
+must be weighted LOWER than time-slot preference in the eventual
+solver objective (Phase 9):
+- Design lean: reuse the same 1-4 rating-scale pattern as time-slot
+  preferences (Phase 6) for consistency, rather than inventing a strict
+  ranking/permutation scheme — e.g. rate each eligible teacher for a
+  subject 1 (Preferred) to 3 (Disliked); there's no "Blocked" concept
+  for faculty since it's explicitly secondary, not a hard constraint.
+- A subject is only rankable if `store.teachers_for_subject(code)` has
+  more than one teacher (already available from Phase 4) — nothing to
+  rank otherwise, and the UI/validation should skip such subjects
+  rather than erroring on them.
+- Store: add `student_faculty_preferences: Dict[str, Dict[str,
+  Dict[str, int]]]` (roll_number -> subject_code -> teacher_id ->
+  rating) with get/set methods, and clear it in `delete_student`
+  (mirrors the Phase 6 pattern for `student_time_preferences`).
+- Validation: reject a rating for a subject with <2 eligible teachers,
+  reject a rating for a teacher_id not actually capable of that subject,
+  reject out-of-range values. Probably no need for the "degenerate
+  matrix" warnings Phase 6 needed — faculty preference is inherently
+  smaller-scope (few subjects, 2-3 teachers each) so there's much less
+  room for a genuinely useless submission.
+- API: likely `GET/PUT /students/{roll_number}/faculty-preferences`
+  (mirrors `api/preferences.py`'s time-preferences routes) plus reuse
+  of Phase 4's `GET /admin/subjects/{code}/teachers` (or a student-safe
+  equivalent without the admin gate) so the frontend knows which
+  teachers are even rankable per subject.
+- Nothing here touches the solver yet (that's Phase 9) — this phase
+  only captures and validates the preference data.

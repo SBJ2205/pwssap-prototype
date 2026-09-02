@@ -42,3 +42,13 @@ def is_odd_semester(semester: int) -> bool:
 
 def is_even_semester(semester: int) -> bool:
     return semester in EVEN_SEMESTERS
+
+
+class PreferenceRating(int, Enum):
+    """A student's rating for one time slot (product decision #10).
+    BLOCKED is a hard "never schedule me here"; the other three are
+    soft preference strength, weakest to strongest."""
+    PREFERRED = 1
+    TOLERABLE = 2
+    DISLIKED = 3
+    BLOCKED = 4
