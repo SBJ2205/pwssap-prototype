@@ -15,7 +15,7 @@ picking this project up without prior conversation context.
 - [x] Phase 6: Student preference submission and validation
 - [x] Phase 7: Faculty preference handling
 - [x] Phase 8: Section generation and timetable preparation
-- [ ] Phase 9: Solver objective with teacher load balancing
+- [x] Phase 9: Solver objective with teacher load balancing
 - [ ] Phase 10: Published result + admin override flow
 - [ ] Phase 11: Student and teacher timetable views
 
@@ -381,43 +381,90 @@ Backend (`backend/`):
 - Full regression: **153/153 checks across 14 suites pass**
   (test_domain through test_api_phase8).
 
-## Next phase (Phase 9)
+## Phase 9 -- what exists now
 
-Solver objective with teacher load balancing -- this is the phase where
-the system produces an *optimised* timetable from the scaffolding built
-in Phase 8:
-- Replace the Phase 8 "first-available" teacher and slot assignments
-  with a CP-SAT optimisation that:
-  1. Maximises student time-slot satisfaction (primary objective,
-     product decision #12) -- uses `student_time_preferences` from
-     Phase 6.
-  2. Maximises faculty preference satisfaction (secondary, lower
-     weight, product decision #11) -- uses `student_faculty_preferences`
-     from Phase 7.
-  3. Balances teacher teaching loads (tertiary but a real optimisation
-     term, not cosmetic, product decision #12): minimise the range or
-     variance of section counts across teachers.
-  4. Hard constraints (always take precedence, product decision #12):
-     - Teacher availability (`is_teacher_available` from Phase 5).
-     - Slot-type rules (Monday-1 blocked, slot-4 lab-only -- already
-       encoded in `validate_slot_for_subject_type`).
-     - No teacher scheduled in two sections at the same slot.
-     - Section capacity limits.
-- The solver should transition the run's status from DRAFT to SOLVED,
-  and then immediately to PUBLISHED (product decision #13).
-- Suggested new module: `solver/engine.py` (note: the old prototype
-  engine was removed in Phase 1, so this is a fresh implementation).
-  The old CP-SAT approach documented in `## What was intentionally
-  removed` is still a reasonable starting point for the decision
-  variable shape, but the objective function must change to match the
-  three-level priority above.
-- `solver/service.py` -- thin wrapper that takes a `run_id`, reads
-  everything from the store, calls the engine, writes the result back,
-  and transitions the run status.
-- `api/solver.py` -- `POST /admin/runs/{run_id}/solve`; admin-only;
-  calls `solver/service.py` synchronously for now (async background
-  job is a later optimisation if needed).
-- Phase 9 should produce a `tests/test_solver.py` with at least: a
-  tiny feasible instance solves and all hard constraints hold; teacher
-  load is balanced; a preference-signal test (student who BLOCKs a
-  slot is never scheduled there); run status transitions to PUBLISHED.
+Backend (`backend/`):
+- `solver/engine.py` -- new module: the pure CP-SAT model (no I/O,
+  no store access, fully testable in isolation):
+  - `SolverInput` / `SolverResult` dataclasses separate concerns from
+    the service layer cleanly.
+  - Three-level minimisation objective:
+    1. **Time-slot satisfaction** (weight 5): for each student assigned
+       to a section, penalise based on the slot's preference rating
+       (PREFERRED=0, TOLERABLE=1, DISLIKED=3, unrated=2).
+    2. **Faculty preference** (weight 1): penalise based on assigned
+       teacher vs. student's teacher ranking (lower weight ensures this
+       never overrides time-slot satisfaction).
+    3. **Teacher load balance** (weight 10 per unit of load range):
+       minimise `max_load - min_load` across all teachers.
+  - Hard constraints modelled inside CP-SAT:
+    - Teacher availability (admin-blocked slots are forbidden).
+    - No teacher double-booking (two sections with the same teacher
+      cannot share a meeting slot).
+    - Section capacity (total enrolled students <= section.capacity).
+    - Student BLOCKED slots (a student rated BLOCKED cannot be placed
+      in a section that meets in that slot).
+  - Decision variables: `slot_var[section][meeting][slot_idx]` (bool),
+    `teacher_var[section][teacher_idx]` (bool),
+    `student_var[roll][subject][section]` (bool).
+  - All three variable groups are in one model so the solver jointly
+    optimises teacher/slot placement and student-section assignment.
+  - `num_workers=4` for multi-threaded solving; configurable
+    `time_limit_seconds` so the API can honour a `?time_limit=` param.
+- `solver/service.py` -- store-aware orchestration:
+  - `run_solver_for_run(run_id, store, time_limit_seconds)` reads all
+    data, builds a `SolverInput`, calls `solve()`, writes slot/teacher
+    assignments back to each Section in the store, persists
+    student-section assignments to `store.student_section_assignments`,
+    and transitions `run.status` to PUBLISHED on success.
+  - Raises `ValueError` (caught by the API as 400) if the run has no
+    sections yet.
+- `api/solver.py` -- admin-only route:
+  - `POST /admin/runs/{run_id}/solve?time_limit=<sec>` -- triggers the
+    solver and returns `{status, run_status, objective_value,
+    wall_time_seconds, num_conflicts, sections, student_section_
+    assignments, warnings}`.
+  - 404 if run not found, 400 if no sections exist.
+- Tests: `tests/test_solver.py` (28/28 checks):
+  - Engine: tiny instance solves to OPTIMAL/FEASIBLE, correct slot
+    shape, Mon-1 excluded.
+  - Engine: teacher availability hard constraint respected.
+  - Engine: student BLOCKED slot never used.
+  - Engine: teacher load balanced (T001=2, T002=2 for 4 sections).
+  - Engine: no teacher double-booking (3 sections / 1 teacher assigned
+    to 3 distinct slots).
+  - Engine: student section assignment respects capacity.
+  - Service: run status transitions DRAFT -> PUBLISHED.
+  - API: role gating, 404, 400, full success path (teacher/slot
+    assigned, run_status=published).
+- Full regression: **181/181 checks across 15 suites pass**.
+
+## Next phase (Phase 10)
+
+Published result + admin override flow -- the solver result is already
+auto-published after Phase 9; Phase 10 adds the manual override tools
+the admin needs to refine the published timetable without re-running
+the solver (product decision #13):
+- **Section membership overrides** -- `POST /admin/sections/{id}/enroll`
+  and `DELETE /admin/sections/{id}/students/{roll_number}`: add/remove
+  students from a section post-publication.
+- **Teacher reassignment override** -- `PUT /admin/sections/{id}/teacher`:
+  change the teacher on a published section (admin can reassign; the
+  solver result is the starting point, not the final word).
+- **Capacity override** -- `PUT /admin/sections/{id}/capacity`: the
+  admin can raise or lower the capacity ceiling after publication
+  (product decision #5).
+- **Conflict detection** -- when the admin manually moves a student or
+  teacher, the API should warn if this creates a slot clash or exceeds
+  capacity, but still allow the override (the admin knows context the
+  solver doesn't).
+- **Student assignment lookup** -- `GET /students/{roll}/sections`:
+  which sections is this student enrolled in (used by Phase 11's
+  student timetable view).
+- **Store change** -- `store.student_section_assignments` (already
+  initialised by Phase 9's service layer) needs proper CRUD methods
+  instead of direct dict access: `enroll_student`, `unenroll_student`,
+  `get_student_sections`.
+- **Tests** -- `tests/test_api_phase10.py`: enroll/unenroll round-trip,
+  capacity enforcement warnings, teacher reassignment, conflict warning
+  on slot clash.
