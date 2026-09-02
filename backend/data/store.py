@@ -12,7 +12,7 @@ misrepresent how the real app is populated. The only thing built eagerly
 is the canonical time-slot grid, which is a fixed structural constant,
 not demo data — see domain/timeslots.py.
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from domain.models import (
     ChoiceTagConfig,
@@ -48,6 +48,10 @@ class InMemoryStore:
         # rating -- that default lives with whatever reads this (the
         # solver, later), not here.
         self.student_time_preferences: Dict[str, Dict[str, int]] = {}
+        # roll_number -> subject_code -> teacher_id -> rating (1-3, no
+        # Blocked -- faculty preference is secondary/soft, never a hard
+        # constraint; see domain.validation.FACULTY_RATING_VALUES).
+        self.student_faculty_preferences: Dict[str, Dict[str, Dict[str, int]]] = {}
 
         self.sections: Dict[int, Section] = {}
         self._next_section_id: int = 0
@@ -116,6 +120,18 @@ class InMemoryStore:
     def teachers_for_subject(self, subject_code: str) -> List[str]:
         return [c.teacher_id for c in self.teacher_capabilities if c.subject_code == subject_code]
 
+    def rankable_subjects_for_semester(self, semester: Optional[int] = None) -> List[Tuple[str, List[str]]]:
+        """(subject_code, [teacher_id, ...]) pairs for subjects with 2+
+        eligible teachers, optionally scoped to one semester -- a subject
+        taught by only one teacher has nothing to rank (product decision
+        #11), so it's excluded here rather than left for callers to filter."""
+        result = []
+        for subject in self.list_subjects(semester):
+            teacher_ids = self.teachers_for_subject(subject.subject_code)
+            if len(teacher_ids) >= 2:
+                result.append((subject.subject_code, teacher_ids))
+        return result
+
     # ── Teacher availability (hard constraint) ──────────────────────────────
     def set_teacher_availability(self, teacher_id: str, slot_key: str, available: bool) -> None:
         self.teacher_availability.setdefault(teacher_id, {})[slot_key] = available
@@ -144,6 +160,7 @@ class InMemoryStore:
         self.students.pop(roll_number, None)
         self.student_choice_selections.pop(roll_number, None)
         self.student_time_preferences.pop(roll_number, None)
+        self.student_faculty_preferences.pop(roll_number, None)
 
     # ── Student time-slot preferences ────────────────────────────────────
     def get_time_preferences(self, roll_number: str) -> Dict[str, int]:
@@ -151,6 +168,18 @@ class InMemoryStore:
 
     def set_time_preferences(self, roll_number: str, ratings: Dict[str, int]) -> None:
         self.student_time_preferences[roll_number] = dict(ratings)
+
+    # ── Student faculty preferences (secondary, soft -- product decision #11) ──
+    def get_faculty_preferences(self, roll_number: str) -> Dict[str, Dict[str, int]]:
+        return {
+            code: dict(ratings)
+            for code, ratings in self.student_faculty_preferences.get(roll_number, {}).items()
+        }
+
+    def set_faculty_preferences(self, roll_number: str, preferences: Dict[str, Dict[str, int]]) -> None:
+        self.student_faculty_preferences[roll_number] = {
+            code: dict(ratings) for code, ratings in preferences.items()
+        }
 
     # ── Student choice selections (per-run) ─────────────────────────────────
     def set_student_choice_selections(

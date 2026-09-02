@@ -13,7 +13,7 @@ picking this project up without prior conversation context.
 - [x] Phase 4: Teacher CSV import and subject-capability mapping
 - [x] Phase 5: Teacher availability management
 - [x] Phase 6: Student preference submission and validation
-- [ ] Phase 7: Faculty preference handling
+- [x] Phase 7: Faculty preference handling
 - [ ] Phase 8: Section generation and timetable preparation
 - [ ] Phase 9: Solver objective with teacher load balancing
 - [ ] Phase 10: Published result + admin override flow
@@ -247,6 +247,44 @@ Backend (`backend/`):
   submission being rejected AND leaving nothing saved, and a uniform
   submission saving with a warning).
 
+## Phase 7 — what exists now
+
+Backend (`backend/`):
+- `domain/validation.py` gained `FACULTY_RATING_VALUES` (`{1, 2, 3}` --
+  no Blocked value; faculty preference is explicitly secondary/soft,
+  never a hard constraint per product decision #11),
+  `FacultyPreferenceValidationResult`, and
+  `validate_faculty_preferences(preferences, rankable_subjects)`.
+  Unlike Phase 6's time-slot validator, there are no "degenerate
+  matrix" warnings here -- an empty submission, or ranking only one of
+  several rankable subjects, is perfectly legitimate since the spec
+  frames this as optional ("students MAY submit..."). Errors instead
+  cover: rating a subject that isn't rankable (unknown, wrong semester,
+  or fewer than 2 eligible teachers), rating a teacher not actually
+  capable of that subject, or an out-of-range rating value.
+- `data/store.py` gained `rankable_subjects_for_semester(semester=None)`
+  (subject_code -> eligible teacher_ids, only for subjects with 2+
+  teachers) and `get_faculty_preferences`/`set_faculty_preferences`,
+  keyed by `roll_number`. `delete_student` now also clears these.
+- `api/faculty_preferences.py` -- student-facing, no admin role
+  required (mirrors `api/preferences.py`'s pattern):
+  - `GET /students/{roll_number}/rankable-subjects` -- which subjects
+    this student can rank and which teachers are eligible for each
+    (resolved to teacher_name), scoped to the student's own semester.
+  - `GET /students/{roll_number}/faculty-preferences` -- currently
+    saved preferences as `{subject_code: {teacher_id: rating}}`.
+  - `PUT /students/{roll_number}/faculty-preferences` -- validates via
+    `validate_faculty_preferences` before saving; 400s with `errors` if
+    rejected.
+  - All three 404 if the roll_number doesn't exist.
+- Tests: `tests/test_faculty_preferences_validation.py` (8 checks
+  directly on `validate_faculty_preferences`) and
+  `tests/test_api_phase7.py` (6 HTTP-level checks: rankable-subjects
+  correctly excludes a single-teacher subject, 404s for an unknown
+  student, a valid save + round-trip, rejecting a non-rankable subject,
+  rejecting an ineligible teacher, and an empty submission being
+  accepted).
+
 ## What was intentionally removed
 
 The previous prototype ("blind abstract time-slot rating" model, no CSV
@@ -280,35 +318,38 @@ Phase 2+ introduces (subject list/choice-tag config UI in Phase 2,
 CSV import UIs in Phase 3-4, etc.) — do not treat the current frontend
 as a regression, it simply hasn't been touched yet.
 
-## Next phase (Phase 7)
+## Next phase (Phase 8)
 
-Faculty preference handling (product decision #11) — students rank
-eligible teachers for subjects that have more than one, and this signal
-must be weighted LOWER than time-slot preference in the eventual
-solver objective (Phase 9):
-- Design lean: reuse the same 1-4 rating-scale pattern as time-slot
-  preferences (Phase 6) for consistency, rather than inventing a strict
-  ranking/permutation scheme — e.g. rate each eligible teacher for a
-  subject 1 (Preferred) to 3 (Disliked); there's no "Blocked" concept
-  for faculty since it's explicitly secondary, not a hard constraint.
-- A subject is only rankable if `store.teachers_for_subject(code)` has
-  more than one teacher (already available from Phase 4) — nothing to
-  rank otherwise, and the UI/validation should skip such subjects
-  rather than erroring on them.
-- Store: add `student_faculty_preferences: Dict[str, Dict[str,
-  Dict[str, int]]]` (roll_number -> subject_code -> teacher_id ->
-  rating) with get/set methods, and clear it in `delete_student`
-  (mirrors the Phase 6 pattern for `student_time_preferences`).
-- Validation: reject a rating for a subject with <2 eligible teachers,
-  reject a rating for a teacher_id not actually capable of that subject,
-  reject out-of-range values. Probably no need for the "degenerate
-  matrix" warnings Phase 6 needed — faculty preference is inherently
-  smaller-scope (few subjects, 2-3 teachers each) so there's much less
-  room for a genuinely useless submission.
-- API: likely `GET/PUT /students/{roll_number}/faculty-preferences`
-  (mirrors `api/preferences.py`'s time-preferences routes) plus reuse
-  of Phase 4's `GET /admin/subjects/{code}/teachers` (or a student-safe
-  equivalent without the admin gate) so the frontend knows which
-  teachers are even rankable per subject.
-- Nothing here touches the solver yet (that's Phase 9) — this phase
-  only captures and validates the preference data.
+Section generation and timetable preparation -- this is the phase
+where the system starts turning catalog data into a concrete,
+schedulable structure, ahead of the solver (Phase 9):
+- For each subject, generate the sections a semester actually needs:
+  - **Theory**: `weekly_hours` may be split into a linked pattern of
+    meetings (`subject.slot_structure`/`linked_pattern`, currently just
+    a raw string captured by Phase 2's CSV import, unparsed) -- Phase 8
+    is where that string needs an actual parser and a Section's
+    Meetings need to preserve the linked pattern as one coherent unit
+    (product decision #6).
+  - **Labs**: `capacity`/24 (or whatever ratio) determines how many
+    *parallel, independent, repeated* sections are needed -- e.g. 216
+    students / 24 per section = 9 lab sections. No linking; each is a
+    standalone section (product decision #6). Use
+    `subject.capacity` (the CSV column, not a fixed rule derived from
+    theory-vs-lab) for the per-section cap, matching product decision
+    #5.
+  - Every generated meeting must be checked against
+    `domain.validation.validate_slot_for_subject_type` (already exists
+    from Phase 1) so a lab never lands on Monday's blocked slot and a
+    theory section never lands in slot 4.
+- Assign each section a capable teacher (`store.teachers_for_subject`)
+  respecting that teacher's availability (`store.is_teacher_available`,
+  Phase 5) -- this is still pre-solver scaffolding, not the actual
+  optimization (that's explicitly Phase 9's job), so a reasonable
+  Phase 8 scope is "produce a feasible-looking section list", not
+  "produce the optimal one".
+- This is the natural point to introduce `domain/section_generation.py`
+  (or similar) as its own module, per the architecture guideline to
+  keep "section generation" and "solver preparation" as distinct
+  concerns (see product decision #16).
+- Store already has `Section`/`Meeting` models and `add_section` from
+  Phase 1, unused by any generation logic until now.

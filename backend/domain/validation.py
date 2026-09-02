@@ -7,7 +7,7 @@ CSV needs its own independent list of errors rather than a single
 raise-on-first-problem exception.
 """
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Mapping
 
 from domain.enums import PreferenceRating, SubjectType, VALID_SEMESTERS
 from domain.models import ChoiceTagConfig, Student, Subject, Teacher
@@ -198,3 +198,53 @@ def validate_time_slot_preferences(
         )
 
     return PreferenceValidationResult(errors=errors, warnings=warnings)
+
+
+# ── Student faculty preference validation (product decision #11) ────────────
+# Faculty preference is secondary and explicitly soft -- there is no
+# Blocked value here (unlike time-slot preference), and no "degenerate
+# matrix" warnings: submitting nothing, or ranking only one subject, is
+# perfectly legitimate since faculty preference is optional (students may
+# submit it "for subjects with multiple eligible teachers", not for all).
+FACULTY_RATING_VALUES = {
+    PreferenceRating.PREFERRED.value,
+    PreferenceRating.TOLERABLE.value,
+    PreferenceRating.DISLIKED.value,
+}
+
+
+@dataclass
+class FacultyPreferenceValidationResult:
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def is_valid(self) -> bool:
+        return len(self.errors) == 0
+
+
+def validate_faculty_preferences(
+    preferences: Dict[str, Dict[str, int]], rankable_subjects: Mapping[str, Iterable[str]]
+) -> FacultyPreferenceValidationResult:
+    """rankable_subjects: subject_code -> the teacher_ids eligible for it
+    (only subjects with 2+ eligible teachers should be included -- see
+    InMemoryStore.rankable_subjects_for_semester)."""
+    errors: List[str] = []
+    for subject_code, teacher_ratings in preferences.items():
+        if subject_code not in rankable_subjects:
+            errors.append(
+                f"Subject '{subject_code}' is not rankable (either unknown, not in this "
+                "student's semester, or has fewer than 2 eligible teachers)."
+            )
+            continue
+
+        valid_teacher_ids = set(rankable_subjects[subject_code])
+        for teacher_id, rating in teacher_ratings.items():
+            if teacher_id not in valid_teacher_ids:
+                errors.append(f"Teacher '{teacher_id}' is not eligible to teach '{subject_code}'.")
+            if rating not in FACULTY_RATING_VALUES:
+                errors.append(
+                    f"Rating {rating} for {subject_code}/{teacher_id} must be one of "
+                    f"{sorted(FACULTY_RATING_VALUES)}."
+                )
+
+    return FacultyPreferenceValidationResult(errors=errors)
