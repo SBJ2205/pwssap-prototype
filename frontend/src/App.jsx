@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 
 import { getStudents, getTeachers } from "./api/catalog";
+import { listRuns } from "./api/runs";
 import { setRole as setApiRole } from "./api/client";
 import Sidebar from "./components/Sidebar";
 import { ErrorState, LoadingState } from "./components/ui";
@@ -91,24 +92,52 @@ export default function App() {
     else setApiRole("student"); // safe default
   }, [session]);
 
-  // Load global catalog (students + teachers) once logged in.
-  // Components that only need a subset can do their own fetching.
+  // Runs state for admin context.
+  const [runs, setRuns] = useState([]);
+  const [activeRunIdState, setActiveRunIdState] = useState(() => {
+    const saved = localStorage.getItem("pwssap_active_run_id");
+    return saved ? parseInt(saved, 10) : null;
+  });
+
+  const setActiveRunId = useCallback((id) => {
+    setActiveRunIdState(id);
+    if (id != null) localStorage.setItem("pwssap_active_run_id", String(id));
+    else localStorage.removeItem("pwssap_active_run_id");
+  }, []);
+
+  const refreshRuns = useCallback(async () => {
+    if (session?.role !== "admin") return [];
+    try {
+      const data = await listRuns();
+      setRuns(data || []);
+      return data || [];
+    } catch {
+      return [];
+    }
+  }, [session]);
+
+  // Load global catalog (students + teachers) and runs once logged in.
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCatalogLoading(true);
-     
     setCatalogError(null);
 
-    Promise.all([
+    const promises = [
       getStudents().catch(() => []),
       getTeachers().catch(() => []),
-    ])
-      .then(([s, t]) => {
+    ];
+    if (session.role === "admin") {
+      promises.push(listRuns().catch(() => []));
+    }
+
+    Promise.all(promises)
+      .then(([s, t, r]) => {
         if (cancelled) return;
         setStudents(s);
         setTeachers(t);
+        if (r) setRuns(r);
       })
       .catch(e => {
         if (!cancelled) setCatalogError(e.message || "Failed to load catalog.");
@@ -120,7 +149,9 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session, reloadTick]);
 
-  const reload = useCallback(() => setReloadTick(t => t + 1), []);
+  const reload = useCallback(() => {
+    setReloadTick(t => t + 1);
+  }, []);
 
   function login(role, identity) {
     const s = { role, identity };
@@ -135,6 +166,8 @@ export default function App() {
     setPage(null);
     setStudents([]);
     setTeachers([]);
+    setRuns([]);
+    setActiveRunId(null);
   }
 
   // Not logged in → show entry screen.
@@ -148,6 +181,8 @@ export default function App() {
     );
   }
 
+  const activeRun = runs.find(r => r.id === activeRunIdState) || (runs.length > 0 ? runs[runs.length - 1] : null);
+
   const PageComponent = PAGE_COMPONENTS[page] || null;
 
   // Shared props passed to every page.
@@ -157,6 +192,11 @@ export default function App() {
     teachers,
     reload,
     setPage,
+    runs,
+    activeRun,
+    activeRunId: activeRun?.id || null,
+    setActiveRunId,
+    refreshRuns,
   };
 
   return (

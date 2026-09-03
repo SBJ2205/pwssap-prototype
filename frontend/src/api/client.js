@@ -17,6 +17,17 @@ export function apiErrorMessage(err) {
   const detail = err?.response?.data?.detail;
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) return detail.map(d => d.msg || JSON.stringify(d)).join("; ");
-  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  if (detail && typeof detail === "object") {
+    if (detail.message) return detail.message;
+    if (detail.errors) return Array.isArray(detail.errors) ? detail.errors.join("; ") : JSON.stringify(detail.errors);
+    return JSON.stringify(detail);
+  }
   return err?.message || "Unknown error";
+}
+
+// Extract raw structured error detail (e.g. { message, row_errors: [...] })
+export function getApiErrorDetails(err) {
+  const detail = err?.response?.data?.detail;
+  if (detail && typeof detail === "object") return detail;
+  return null;
 }

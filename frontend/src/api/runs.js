@@ -18,9 +18,9 @@ export const getRun = (runId) =>
   client.get(`/admin/runs/${runId}`).then(r => r.data);
 
 // PUT /admin/runs/{id}/choice-tags  →  run object
-// body: {configs: [{tag: str, is_choice_based: bool, numeric_value: int|null}]}
+// body: [{tag: str, numeric_value: int, is_choice_based: bool}]
 export const setRunChoiceTags = (runId, configs) =>
-  client.put(`/admin/runs/${runId}/choice-tags`, { configs }).then(r => r.data);
+  client.put(`/admin/runs/${runId}/choice-tags`, configs).then(r => r.data);
 
 // ── Section generation ──────────────────────────────────────────────────
 // POST /admin/runs/{id}/generate-sections

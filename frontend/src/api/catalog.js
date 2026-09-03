@@ -8,6 +8,16 @@ export const getSubjects = (semester) => {
   return client.get("/subjects", { params }).then(r => r.data);
 };
 
+// GET /admin/subjects/tags  →  {tags: ["CORE", "PE1", ...]}
+export const getSubjectTags = (semester) => {
+  const params = semester != null ? { semester } : {};
+  return client.get("/admin/subjects/tags", { params }).then(r => r.data);
+};
+
+// GET /admin/students/{roll_number}/choices?run_id=N  →  [{choice_column, numeric_value, tag}]
+export const getStudentChoices = (rollNumber, runId) =>
+  client.get(`/admin/students/${rollNumber}/choices`, { params: { run_id: runId } }).then(r => r.data);
+
 // GET /students  →  [{roll_number, name, semester}]
 export const getStudents = (semester) => {
   const params = semester != null ? { semester } : {};
