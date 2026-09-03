@@ -1,18 +1,38 @@
 """Combines all resource routers into a single api_router that main.py mounts."""
 from fastapi import APIRouter
 
-from api import availability, faculty_preferences, meta, overrides, preferences, runs, sections, solver, students, subjects, teachers
+from api import (
+    availability,
+    faculty_preferences,
+    meta,
+    overrides,
+    preferences,
+    runs,
+    sections,
+    solver,
+    students,
+    subjects,
+    teachers,
+)
+
+ALL_ROUTERS = [
+    meta.router,
+    subjects.router,
+    students.router,
+    teachers.router,
+    availability.router,
+    preferences.router,
+    faculty_preferences.router,
+    runs.router,
+    sections.router,
+    solver.router,
+    overrides.admin_router,
+    overrides.student_router,
+]
 
 api_router = APIRouter()
-api_router.include_router(meta.router)
-api_router.include_router(subjects.router)
-api_router.include_router(students.router)
-api_router.include_router(teachers.router)
-api_router.include_router(availability.router)
-api_router.include_router(preferences.router)
-api_router.include_router(faculty_preferences.router)
-api_router.include_router(runs.router)
-api_router.include_router(sections.router)
-api_router.include_router(solver.router)
-api_router.include_router(overrides.admin_router)
-api_router.include_router(overrides.student_router)
+for r in ALL_ROUTERS:
+    api_router.include_router(r)
+    for route in r.routes:
+        if route not in api_router.routes:
+            api_router.routes.append(route)

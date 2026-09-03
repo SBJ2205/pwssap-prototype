@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { getFacultyPrefs, saveFacultyPrefs } from "../../api/preferences";
-import { getSubjects, getTeachers, getSubjectTeachers } from "../../api/catalog";
+import { getFacultyPrefs, saveFacultyPrefs, getRankableSubjects } from "../../api/preferences";
+import { getSubjects } from "../../api/catalog";
 import { apiErrorMessage } from "../../api/client";
 import { RATING_META } from "../../constants";
 import { Card, EmptyState, InfoBox, PageHeader } from "../../components/ui";
@@ -16,10 +16,9 @@ const FACULTY_RATING_META = {
 export default function StudentFacultyPrefs({ session }) {
   const { identity: rollNumber } = session;
 
-  const [subjects,        setSubjects]        = useState([]);
-  const [teachers,        setTeachers]        = useState([]);
-  const [subjectTeachers, setSubjectTeachers] = useState({}); // code -> [teacher_id, ...]
-  const [prefs,           setPrefs]           = useState({}); // {subject_code: {teacher_id: rating}}
+  const [subjects,         setSubjects]         = useState([]);
+  const [rankableSubjects, setRankableSubjects] = useState([]); // [{subject_code, teachers: [{teacher_id, teacher_name}]}]
+  const [prefs,            setPrefs]            = useState({}); // {subject_code: {teacher_id: rating}}
 
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
@@ -30,34 +29,18 @@ export default function StudentFacultyPrefs({ session }) {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-     
     setError(null);
 
     Promise.all([
-      getSubjects(),
-      getTeachers(),
-      getFacultyPrefs(rollNumber),
+      getSubjects().catch(() => []),
+      getRankableSubjects(rollNumber).catch(() => []),
+      getFacultyPrefs(rollNumber).catch(() => ({ preferences: {} })),
     ])
-      .then(async ([subjectsData, teachersData, prefsData]) => {
+      .then(([subjectsData, rankableData, prefsData]) => {
         if (cancelled) return;
-        setSubjects(subjectsData);
-        setTeachers(teachersData);
-        setPrefs(prefsData.preferences || {});
-
-        // For each subject, fetch which teacher_ids can teach it.
-        const entries = await Promise.all(
-          subjectsData.map(async s => {
-            try {
-              const r = await getSubjectTeachers(s.subject_code);
-              return [s.subject_code, r.teacher_ids || []];
-            } catch {
-              return [s.subject_code, []];
-            }
-          })
-        );
-        if (!cancelled) {
-          setSubjectTeachers(Object.fromEntries(entries));
-        }
+        setSubjects(subjectsData || []);
+        setRankableSubjects(rankableData || []);
+        setPrefs(prefsData?.preferences || {});
       })
       .catch(e => {
         if (!cancelled) setError(apiErrorMessage(e));
@@ -67,19 +50,19 @@ export default function StudentFacultyPrefs({ session }) {
     return () => { cancelled = true; };
   }, [rollNumber]);
 
-  const teacherMap = Object.fromEntries(teachers.map(t => [t.teacher_id, t.teacher_name]));
   const subjectMap = Object.fromEntries(subjects.map(s => [s.subject_code, s.subject_name]));
+  const teacherMap = {};
+  const subjectTeachers = {};
+  for (const item of rankableSubjects) {
+    subjectTeachers[item.subject_code] = (item.teachers || []).map(t => t.teacher_id);
+    for (const t of (item.teachers || [])) {
+      teacherMap[t.teacher_id] = t.teacher_name;
+    }
+  }
 
-  // Subjects where >1 teacher is capable (only these are rankable).
-  const rankable = subjects.filter(
-    s => (subjectTeachers[s.subject_code] || []).length > 1
-  );
-  const singleTeacher = subjects.filter(
-    s => (subjectTeachers[s.subject_code] || []).length === 1
-  );
-  const noTeacher = subjects.filter(
-    s => (subjectTeachers[s.subject_code] || []).length === 0
-  );
+  const rankable = rankableSubjects;
+  const rankableCodes = new Set(rankableSubjects.map(r => r.subject_code));
+  const singleTeacher = subjects.filter(s => !rankableCodes.has(s.subject_code));
 
   function cycleRating(subjectCode, teacherId) {
     const cur = (prefs[subjectCode] || {})[teacherId] ?? 0;
@@ -246,19 +229,8 @@ export default function StudentFacultyPrefs({ session }) {
                 {singleTeacher.map(s => (
                   <div key={s.subject_code} style={{ marginBottom: 4 }}>
                     <strong>{subjectMap[s.subject_code] || s.subject_code}</strong> —
-                    only one faculty member ({teacherMap[(subjectTeachers[s.subject_code] || [])[0]] || "—"}).
+                    not rankable (single faculty or non-elective).
                   </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          {noTeacher.length > 0 && (
-            <Card>
-              <div style={{ fontWeight: 600, marginBottom: 4, color: "#888" }}>No teacher assigned yet</div>
-              <div style={{ fontSize: 12, color: "#aaa" }}>
-                {noTeacher.map(s => (
-                  <div key={s.subject_code}>{subjectMap[s.subject_code] || s.subject_code}</div>
                 ))}
               </div>
             </Card>

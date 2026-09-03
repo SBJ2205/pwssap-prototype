@@ -27,8 +27,19 @@ export const getStudents = (semester) => {
 // GET /teachers  →  [{teacher_id, teacher_name}]
 export const getTeachers = () => client.get("/teachers").then(r => r.data);
 
-// GET /timeslots  →  [{key, day, start_time, end_time, allows_theory, allows_lab}]
-export const getTimeslots = () => client.get("/timeslots").then(r => r.data);
+// GET /timeslots  →  [{key, day, slot_index, start_time, end_time, allowed_types, allows_theory, allows_lab}]
+export const getTimeslots = () =>
+  client.get("/timeslots").then(r => {
+    return (r.data || []).map(slot => {
+      const allowed = slot.allowed_types || [];
+      return {
+        ...slot,
+        allowed_types: allowed,
+        allows_theory: allowed.includes("theory"),
+        allows_lab: allowed.includes("lab"),
+      };
+    });
+  });
 
 // GET /admin/teachers/{id}/capabilities  →  {teacher_id, subject_codes: [...]}
 export const getTeacherCapabilities = (teacherId) =>

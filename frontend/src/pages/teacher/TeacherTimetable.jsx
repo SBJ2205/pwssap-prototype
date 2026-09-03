@@ -4,9 +4,10 @@ import { apiErrorMessage } from "../../api/client";
 import { DAYS, SLOT_NUMBERS, SLOT_LABELS, SLOT_SHORT, slotKey } from "../../constants";
 import { Card, EmptyState, PageHeader } from "../../components/ui";
 
-export default function TeacherTimetable({ session }) {
+export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
   const { identity: teacherId } = session;
 
+  const [selectedRunId, setSelectedRunId] = useState(activeRunId ?? null);
   const [timetable, setTimetable] = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
@@ -15,14 +16,13 @@ export default function TeacherTimetable({ session }) {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-     
     setError(null);
-    getTeacherTimetable(teacherId)
+    getTeacherTimetable(teacherId, selectedRunId)
       .then(data => { if (!cancelled) setTimetable(data); })
       .catch(e   => { if (!cancelled) setError(apiErrorMessage(e)); })
       .finally(()=> { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [teacherId]);
+  }, [teacherId, selectedRunId]);
 
   if (loading) return (
     <div>
@@ -55,10 +55,34 @@ export default function TeacherTimetable({ session }) {
 
   return (
     <div>
-      <PageHeader
-        title="My Timetable"
-        sub={`${timetable?.teacher_name || teacherId} · ${schedule.length} section(s) assigned`}
-      />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+        <PageHeader
+          title="My Timetable"
+          sub={`${timetable?.teacher_name || teacherId} · ${schedule.length} section(s) assigned`}
+        />
+
+        {/* Run Scope Selector */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", padding: "6px 12px", borderRadius: 8, border: "1px solid #e0ddd8" }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#555" }}>Run Scope:</span>
+          <select
+            value={selectedRunId ?? ""}
+            onChange={e => setSelectedRunId(e.target.value ? parseInt(e.target.value, 10) : null)}
+            style={{ fontSize: 12, padding: "4px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+          >
+            <option value="">All Runs (Combined)</option>
+            {runs.map(r => (
+              <option key={r.id} value={r.id}>
+                Run #{r.id} (Sem {r.semester})
+              </option>
+            ))}
+            {runs.length === 0 && activeRunId != null && (
+              <option value={activeRunId}>
+                Active Run #{activeRunId}
+              </option>
+            )}
+          </select>
+        </div>
+      </div>
 
       {schedule.length === 0 && (
         <EmptyState
