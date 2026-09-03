@@ -3,15 +3,15 @@ import { client } from "./client";
 
 // ── Teacher availability ────────────────────────────────────────────────
 // GET /admin/teachers/{id}/availability
-// →  {teacher_id, blocked_slots: ["Mon-1", "Fri-4", ...]}
+// →  [{slot_key, day, slot_index, start_time, end_time, available: bool}]
 export const getTeacherAvailability = (teacherId) =>
   client.get(`/admin/teachers/${teacherId}/availability`).then(r => r.data);
 
 // PUT /admin/teachers/{id}/availability
-// body: {blocked_slots: ["Mon-1", ...]}
-// →  {teacher_id, blocked_slots}
-export const setTeacherAvailability = (teacherId, blockedSlots) =>
-  client.put(`/admin/teachers/${teacherId}/availability`, { blocked_slots: blockedSlots })
+// body: {slots: {[slot_key]: bool}}
+// →  [{slot_key, day, slot_index, start_time, end_time, available: bool}]
+export const setTeacherAvailability = (teacherId, slotsMap) =>
+  client.put(`/admin/teachers/${teacherId}/availability`, { slots: slotsMap })
     .then(r => r.data);
 
 // ── Section overrides (post-publication) ────────────────────────────────
