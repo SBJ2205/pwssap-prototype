@@ -1,203 +1,183 @@
-import { useEffect, useState } from "react";
+import "./App.css";
+import { useCallback, useEffect, useState } from "react";
 
-import { getFacultyBySubject, getSections, getStudents, getSubjects } from "./api/catalog";
+
+import { getStudents, getTeachers } from "./api/catalog";
 import { setRole as setApiRole } from "./api/client";
-import { getFacultyPrefs, getPrefs, saveFacultyPrefs as apiSaveFacultyPrefs, savePrefs as apiSavePrefs } from "./api/preferences";
-import { getResults, runSolve } from "./api/solver";
 import Sidebar from "./components/Sidebar";
-import { Card, ErrorState, LoadingState } from "./components/ui";
-import { NAV } from "./constants";
-import DashboardPage from "./pages/DashboardPage";
-import FacultyPrefsPage from "./pages/FacultyPrefsPage";
-import PrefsPage from "./pages/PrefsPage";
-import SlotsPage from "./pages/SlotsPage";
-import SolverPage from "./pages/SolverPage";
-import TimetablePage from "./pages/TimetablePage";
+import { ErrorState, LoadingState } from "./components/ui";
+import EntryScreen from "./pages/EntryScreen";
+
+// Admin pages
+import AdminDashboard from "./pages/admin/AdminDashboard";
+import AdminRuns from "./pages/admin/AdminRuns";
+import AdminSubjects from "./pages/admin/AdminSubjects";
+import AdminStudents from "./pages/admin/AdminStudents";
+import AdminTeachers from "./pages/admin/AdminTeachers";
+import AdminAvailability from "./pages/admin/AdminAvailability";
+import AdminSolver from "./pages/admin/AdminSolver";
+import AdminTimetable from "./pages/admin/AdminTimetable";
+import AdminOverrides from "./pages/admin/AdminOverrides";
+
+// Student pages
+import StudentPrefs from "./pages/student/StudentPrefs";
+import StudentFacultyPrefs from "./pages/student/StudentFacultyPrefs";
+import StudentTimetable from "./pages/student/StudentTimetable";
+
+// Teacher pages
+import TeacherTimetable from "./pages/teacher/TeacherTimetable";
+
+const PAGE_COMPONENTS = {
+  "admin-dashboard":    AdminDashboard,
+  "admin-runs":         AdminRuns,
+  "admin-subjects":     AdminSubjects,
+  "admin-students":     AdminStudents,
+  "admin-teachers":     AdminTeachers,
+  "admin-availability": AdminAvailability,
+  "admin-solver":       AdminSolver,
+  "admin-timetable":    AdminTimetable,
+  "admin-overrides":    AdminOverrides,
+  "student-prefs":         StudentPrefs,
+  "student-facultyprefs":  StudentFacultyPrefs,
+  "student-timetable":     StudentTimetable,
+  "teacher-timetable": TeacherTimetable,
+};
+
+// Derive initial page from role.
+function defaultPage(role) {
+  if (role === "admin") return "admin-dashboard";
+  if (role === "student") return "student-prefs";
+  if (role === "teacher") return "teacher-timetable";
+  return null;
+}
+
+// Persist session to localStorage so refresh doesn't log you out.
+const SESSION_KEY = "pwssap_session";
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(session) {
+  if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  else localStorage.removeItem(SESSION_KEY);
+}
 
 export default function App() {
-  // Minimal local-prototype role concept (see backend/api/deps.py). No real
-  // auth — the caller just asserts a role, and the backend enforces it on
-  // admin-only routes (e.g. GET /sections, all /admin/* CRUD).
-  const [role, setRole] = useState(() => localStorage.getItem("pwssap_role") || "admin");
-  const [page, setPage] = useState(() => (role === "student" ? "prefs" : "slots"));
+  // session: { role: "admin"|"student"|"teacher", identity: string }
+  // identity = "admin", roll_number, or teacher_id
+  const [session, setSession] = useState(() => loadSession());
+  const [page, setPage] = useState(() => {
+    const s = loadSession();
+    return s ? defaultPage(s.role) : null;
+  });
 
-  const [slots, setSlots] = useState([]);
-  const [subjects, setSubjects] = useState([]);
+  // Catalog that the entire app may need across multiple pages.
+  // Loaded lazily on first login; refreshed on explicit reload.
   const [students, setStudents] = useState([]);
-  const [selStudent, setSelStudent] = useState(0);
-  const [prefs, setPrefs] = useState({});
-  const [warnings, setWarnings] = useState([]);
-  const [solving, setSolving] = useState(false);
-  const [solveProgress, setSolveProgress] = useState(0);
-  const [results, setResults] = useState(null);
-  const [fairness, setFairness] = useState(12);
-  const [facultyBySubject, setFacultyBySubject] = useState({});
-  const [facultyPrefs, setFacultyPrefs] = useState({});
-  const [facultyWeight, setFacultyWeight] = useState(1);
-  const [enableGapReduction, setEnableGapReduction] = useState(true);
-
-  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [teachers, setTeachers] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState(null);
   const [reloadTick, setReloadTick] = useState(0);
 
+  // Sync the X-Role header whenever the session changes.
   useEffect(() => {
-    localStorage.setItem("pwssap_role", role);
-    // Every request carries the current role; the backend rejects
-    // admin-only routes for anything other than role=admin.
-    setApiRole(role);
-  }, [role]);
+    if (session) setApiRole(session.role);
+    else setApiRole("student"); // safe default
+  }, [session]);
 
+  // Load global catalog (students + teachers) once logged in.
+  // Components that only need a subset can do their own fetching.
   useEffect(() => {
+    if (!session) return;
     let cancelled = false;
-
-    // Reset loading/error before kicking off the fetch for the new role or
-    // reload tick. This runs synchronously at the top of the effect (an
-    // intentional, standard "reset before fetch" pattern), not in response
-    // to an external event, so it's exempted from set-state-in-effect below.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCatalogLoading(true);
+     
     setCatalogError(null);
 
-    // /sections is the concrete teacher timetable and is admin-only — a
-    // student caller would get a 403, so don't even ask for it.
-    const sectionsPromise = role === "admin" ? getSections().catch(() => []) : Promise.resolve([]);
-
     Promise.all([
-      sectionsPromise,
-      getSubjects(),
-      getStudents(),
-      getFacultyBySubject(),
-      // Pick up the last solver run (if any) so results survive a page
-      // reload and are visible to students who weren't present when
-      // admin ran it.
-      getResults().catch(() => ({ status: "NOT_RUN" })),
+      getStudents().catch(() => []),
+      getTeachers().catch(() => []),
     ])
-      .then(([sectionsData, subjectsData, studentsData, facultyData, resultsData]) => {
+      .then(([s, t]) => {
         if (cancelled) return;
-        setSlots(sectionsData);
-        setSubjects(subjectsData);
-        setStudents(studentsData);
-        setFacultyBySubject(facultyData);
-        if (resultsData?.status === "OPTIMAL") setResults(resultsData);
+        setStudents(s);
+        setTeachers(t);
       })
       .catch(e => {
-        if (!cancelled) setCatalogError(e.message || "Failed to load data from the server.");
+        if (!cancelled) setCatalogError(e.message || "Failed to load catalog.");
       })
       .finally(() => {
         if (!cancelled) setCatalogLoading(false);
       });
 
     return () => { cancelled = true; };
-  }, [role, reloadTick]);
+  }, [session, reloadTick]);
 
-  useEffect(() => {
-    if (students.length === 0) return;
-    getPrefs(selStudent).then(setPrefs);
-    getFacultyPrefs(selStudent).then(setFacultyPrefs);
-    // Clear stale warnings from the previously selected student immediately
-    // (before their prefs resolve), not in reaction to an external event.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setWarnings([]);
-  }, [selStudent, students]);
+  const reload = useCallback(() => setReloadTick(t => t + 1), []);
 
-  // tsKey = "Mon|9:00" string
-  function cycleRating(tsKey) {
-    const cur = prefs[tsKey] ?? 0;
-    const next = cur >= 4 ? 0 : cur + 1;
-    const updated = { ...prefs };
-    if (next === 0) delete updated[tsKey];
-    else updated[tsKey] = next;
-    setPrefs(updated);
+  function login(role, identity) {
+    const s = { role, identity };
+    saveSession(s);
+    setSession(s);
+    setPage(defaultPage(role));
   }
 
-  async function savePrefs() {
-    const data = await apiSavePrefs(selStudent, prefs);
-    setWarnings(data.warnings || []);
-    alert(data.warnings.length === 0
-      ? "Preferences saved! No feasibility issues."
-      : "Saved with warnings:\n" + data.warnings.join("\n"));
+  function logout() {
+    saveSession(null);
+    setSession(null);
+    setPage(null);
+    setStudents([]);
+    setTeachers([]);
   }
 
-  // Faculty ratings are PER SUBJECT (a professor's ranking under one subject
-  // is independent of the same professor under another), and keyed by
-  // teacher_id (not name) to match the backend's normalized domain model.
-  // Cycle 0 (Indifferent) → 3 (Disliked) — no "Blocked" option, faculty
-  // mismatch is always a soft secondary penalty, never a hard block.
-  function cycleFacultyRating(subjCode, teacherId) {
-    const subjPrefs = facultyPrefs[subjCode] ?? {};
-    const cur = subjPrefs[teacherId] ?? 0;
-    const next = cur >= 3 ? 0 : cur + 1;
-    const updatedSubj = { ...subjPrefs };
-    if (next === 0) delete updatedSubj[teacherId];
-    else updatedSubj[teacherId] = next;
-    setFacultyPrefs({ ...facultyPrefs, [subjCode]: updatedSubj });
+  // Not logged in → show entry screen.
+  if (!session) {
+    return (
+      <EntryScreen
+        students={students}
+        teachers={teachers}
+        onLogin={login}
+      />
+    );
   }
 
-  async function saveFacultyPrefs() {
-    await apiSaveFacultyPrefs(selStudent, facultyPrefs);
-    alert("Faculty preferences saved!");
-  }
+  const PageComponent = PAGE_COMPONENTS[page] || null;
 
-  async function runSolver() {
-    setSolving(true);
-    setSolveProgress(0);
-    setResults(null);
-    // Animate progress bar
-    let prog = 0;
-    const interval = setInterval(() => {
-      prog = Math.min(prog + Math.random() * 15 + 5, 92);
-      setSolveProgress(Math.round(prog));
-    }, 150);
-    try {
-      const data = await runSolve({
-        fairness_index: fairness,
-        faculty_weight: facultyWeight,
-        enable_gap_reduction: enableGapReduction,
-      });
-      clearInterval(interval);
-      setSolveProgress(100);
-      setResults(data);
-    } catch (e) {
-      clearInterval(interval);
-      if (e.response?.status === 403) {
-        alert("Only admin can run the solver. Switch to \"Admin\" in the sidebar first.");
-      } else {
-        alert("Solver error: " + e.message);
-      }
-    }
-    setSolving(false);
-  }
-
-  const isAdminPage = NAV.find(n => n.key === page)?.group === "Admin";
+  // Shared props passed to every page.
+  const sharedProps = {
+    session,
+    students,
+    teachers,
+    reload,
+    setPage,
+  };
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "system-ui, sans-serif", fontSize: 14, background: "#f5f4f0" }}>
-      <Sidebar role={role} setRole={setRole} page={page} setPage={setPage} />
+    <div style={{
+      display: "flex", height: "100vh",
+      fontFamily: "'Inter', system-ui, sans-serif",
+      fontSize: 14, background: "#f5f4f0"
+    }}>
+      <Sidebar session={session} page={page} setPage={setPage} onLogout={logout} />
 
-      {/* Main */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "28px 32px" }}>
-        {catalogLoading && <LoadingState label="Loading PWSSAP data…" />}
+      {/* Main content */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "28px 32px", minWidth: 0 }}>
+        {catalogLoading && <LoadingState label="Loading catalog…" />}
 
         {!catalogLoading && catalogError && (
-          <ErrorState message={catalogError} onRetry={() => setReloadTick(t => t + 1)} />
+          <ErrorState message={catalogError} onRetry={reload} />
         )}
 
-        {!catalogLoading && !catalogError && <>
-          {role !== "admin" && isAdminPage && (
-            <Card><div style={{ color: "#791F1F", fontSize: 13 }}>This section is admin-only. Switch to "Admin" in the sidebar to view it.</div></Card>
-          )}
-          {(role === "admin" || !isAdminPage) && <>
-            {page === "slots" && <SlotsPage slots={slots} />}
-            {page === "solver" && <SolverPage solving={solving} progress={solveProgress} results={results} fairness={fairness} setFairness={setFairness}
-              facultyWeight={facultyWeight} setFacultyWeight={setFacultyWeight}
-              enableGapReduction={enableGapReduction} setEnableGapReduction={setEnableGapReduction}
-              runSolver={runSolver} setPage={setPage} />}
-            {page === "dashboard" && <DashboardPage results={results} />}
-            {page === "prefs" && <PrefsPage students={students} selStudent={selStudent} setSelStudent={setSelStudent} prefs={prefs} cycleRating={cycleRating} savePrefs={savePrefs} warnings={warnings} />}
-            {page === "facultyprefs" && <FacultyPrefsPage students={students} subjects={subjects} facultyBySubject={facultyBySubject} selStudent={selStudent} setSelStudent={setSelStudent} facultyPrefs={facultyPrefs} cycleFacultyRating={cycleFacultyRating} saveFacultyPrefs={saveFacultyPrefs} />}
-            {page === "timetable" && <TimetablePage students={students} results={results} selStudent={selStudent} setSelStudent={setSelStudent} />}
-          </>}
-        </>}
+        {!catalogLoading && PageComponent && (
+          <PageComponent {...sharedProps} />
+        )}
       </div>
     </div>
   );
