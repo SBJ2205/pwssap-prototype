@@ -200,7 +200,7 @@ export default function App() {
   };
 
   return (
-    <div style={{
+    <div className="app-container" style={{
       display: "flex", height: "100vh",
       fontFamily: "'Inter', system-ui, sans-serif",
       fontSize: 14, background: "#f5f4f0"
@@ -208,7 +208,7 @@ export default function App() {
       <Sidebar session={session} page={page} setPage={setPage} onLogout={logout} />
 
       {/* Main content */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "28px 32px", minWidth: 0 }}>
+      <div className="app-main" style={{ flex: 1, overflowY: "auto", padding: "28px 32px", minWidth: 0 }}>
         {catalogLoading && <LoadingState label="Loading catalog…" />}
 
         {!catalogLoading && catalogError && (

@@ -12,7 +12,7 @@ export default function Sidebar({ session, page, setPage, onLogout }) {
   const rm = ROLE_META[role] || ROLE_META.admin;
 
   return (
-    <div style={{
+    <div className="app-sidebar" style={{
       width: 230,
       minWidth: 230,
       background: "#fff",
