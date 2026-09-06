@@ -40,33 +40,37 @@ class SlotStructureError(ValueError):
 
 
 def parse_slot_structure(raw: Optional[str], weekly_hours: int) -> List[int]:
-    """Parse a raw slot_structure string into a list of per-meeting hour
-    counts.
+    """Parse a raw slot_structure string into a list of per-meeting hour counts.
 
-    The department's slot grid uses 2-hour blocks exclusively, so every
-    element in the returned list is always 2.  If the raw string is absent
-    or empty, the default is weekly_hours // 2 meetings of 2 hours each
-    (e.g. weekly_hours=4 → [2, 2]).
+    The department's slot grid uses 2-hour physical blocks.
+    A 3-hour subject is represented as one 2-hour meeting + one 1-hour remainder: [2, 1].
+    A 4-hour subject is represented as two 2-hour meetings: [2, 2].
+    A 2-hour subject is represented as one 2-hour meeting: [2].
+    A 1-hour subject is represented as one 1-hour meeting: [1].
 
     Valid string forms:
-      - None / "" → default (weekly_hours // 2 meetings of 2 h each)
-      - "4"       → treated as the whole block; same as default
-      - "2+2"     → two meetings of 2 hours each
-      - "2+2+2"   → three meetings of 2 hours each
+      - None / "" → default: pairs of 2 plus 1 if odd (e.g. 4 → [2, 2], 3 → [2, 1])
+      - "3"       → shorthand for [2, 1]
+      - "4"       → shorthand for [2, 2]
+      - "2+1"     → [2, 1]
+      - "1+2"     → [1, 2]
+      - "2+2"     → [2, 2]
 
     Raises SlotStructureError if:
-      - Any element is not 2 (the grid only supports 2-hour blocks).
+      - Any element is not 1 or 2.
       - The total hours in the pattern don't equal weekly_hours.
       - The string contains non-numeric, non-'+' characters.
     """
+    if weekly_hours <= 0:
+        raise SlotStructureError(f"weekly_hours={weekly_hours} must be a positive integer.")
+
     if not raw or not raw.strip():
-        # Default: split weekly_hours into 2-hour meetings.
-        if weekly_hours % 2 != 0:
-            raise SlotStructureError(
-                f"weekly_hours={weekly_hours} is not divisible by 2 and no "
-                "slot_structure was given; cannot determine meeting pattern."
-            )
-        return [2] * (weekly_hours // 2)
+        num_2s = weekly_hours // 2
+        remainder = weekly_hours % 2
+        result = [2] * num_2s
+        if remainder:
+            result.append(1)
+        return result
 
     raw = raw.strip()
 
@@ -78,12 +82,12 @@ def parse_slot_structure(raw: Optional[str], weekly_hours: int) -> List[int]:
                 f"slot_structure '{raw}' ({total} h) does not match "
                 f"weekly_hours={weekly_hours}."
             )
-        if total % 2 != 0:
-            raise SlotStructureError(
-                f"slot_structure total {total} h is not divisible by 2; "
-                "the slot grid only supports 2-hour blocks."
-            )
-        return [2] * (total // 2)
+        num_2s = total // 2
+        remainder = total % 2
+        result = [2] * num_2s
+        if remainder:
+            result.append(1)
+        return result
 
     # "N+N+..." form.
     parts_raw = raw.split("+")
@@ -96,11 +100,11 @@ def parse_slot_structure(raw: Optional[str], weekly_hours: int) -> List[int]:
             )
         parts.append(int(part))
 
-    bad = [p for p in parts if p != 2]
+    bad = [p for p in parts if p not in (1, 2)]
     if bad:
         raise SlotStructureError(
-            f"slot_structure '{raw}' contains non-2-hour segments {bad}. "
-            "Only 2-hour meeting blocks are supported on this slot grid."
+            f"slot_structure '{raw}' contains invalid segments {bad}. "
+            "Only 2-hour meeting blocks and 1-hour remainders are supported."
         )
 
     total = sum(parts)
@@ -236,11 +240,12 @@ def _generate_theory_sections(
     used_globally: Set[str] = set()
     meetings: List[Meeting] = []
 
-    for _ in range(num_meetings):
+    for duration in meeting_hours_list:
         slot = _pick_slot(
             valid_slots, assigned_teacher, teacher_avail,
             used_by_teacher, used_globally
         )
+        slot_part = 1 if duration == 1 else None
         if slot is None:
             warnings.append(SectionGenerationWarning(
                 subject_code=subject.subject_code,
@@ -249,9 +254,9 @@ def _generate_theory_sections(
                     f"'{section_label}'. Meeting stored with slot_key=None."
                 ),
             ))
-            meetings.append(Meeting(slot_key=""))  # empty string = unassigned
+            meetings.append(Meeting(slot_key="", duration_hours=duration, slot_part=slot_part))
         else:
-            meetings.append(Meeting(slot_key=slot.key))
+            meetings.append(Meeting(slot_key=slot.key, duration_hours=duration, slot_part=slot_part))
             used_by_teacher.add(slot.key)
             used_globally.add(slot.key)
 
@@ -349,7 +354,7 @@ def _generate_lab_sections(
             label=label,
             teacher_id=assigned_teacher,
             capacity=subject.capacity,
-            meetings=[Meeting(slot_key=meeting_slot_key)],
+            meetings=[Meeting(slot_key=meeting_slot_key, duration_hours=min(subject.weekly_hours, 2), slot_part=None)],
             run_id=run_id,
         )
         result.sections.append(section)

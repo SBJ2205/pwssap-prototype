@@ -1,4 +1,4 @@
-﻿"""Unit tests for domain.section_generation (Phase 8).
+"""Unit tests for domain.section_generation (Phase 8).
 
 These tests exercise the generation logic directly â€” no HTTP, no store.
 Run with:
@@ -91,30 +91,33 @@ check('"2+2" with weekly_hours=4 â†’ [2, 2]', result == [2, 2])
 result = parse_slot_structure("2+2+2", 6)
 check('"2+2+2" with weekly_hours=6 â†’ [2, 2, 2]', result == [2, 2, 2])
 
-result = parse_slot_structure("4", 4)
-check('"4" shorthand with weekly_hours=4 â†’ [2, 2]', result == [2, 2])
+result = parse_slot_structure(None, 3)
+check("None with weekly_hours=3 -> [2, 1]", result == [2, 1])
 
-# â”€â”€ Test 3: parse_slot_structure â€” error cases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+result = parse_slot_structure("2+1", 3)
+check('"2+1" with weekly_hours=3 -> [2, 1]', result == [2, 1])
+
+# ── Test 3: parse_slot_structure — error cases ────────────────────────────
 
 print("\n--- parse_slot_structure errors ---")
 
 try:
-    parse_slot_structure("3+1", 4)
-    check("3+1 with non-2 segments raises SlotStructureError", False)
+    parse_slot_structure("4+1", 5)  # 4 is not 1 or 2
+    check("4+1 with non-1/2 segments raises SlotStructureError", False)
 except SlotStructureError:
-    check("3+1 with non-2 segments raises SlotStructureError", True)
+    check("4+1 with non-1/2 segments raises SlotStructureError", True)
 
 try:
-    parse_slot_structure("2+2", 6)  # sum=4 â‰  weekly_hours=6
+    parse_slot_structure("2+2", 6)  # sum=4 != weekly_hours=6
     check("2+2 with weekly_hours=6 (mismatch) raises SlotStructureError", False)
 except SlotStructureError:
     check("2+2 with weekly_hours=6 (mismatch) raises SlotStructureError", True)
 
 try:
-    parse_slot_structure(None, 3)  # odd hours, can't split into 2-h blocks
-    check("None with weekly_hours=3 (odd) raises SlotStructureError", False)
+    parse_slot_structure("3+1", 4)  # 3 is not 1 or 2
+    check("3+1 with invalid segment 3 raises SlotStructureError", False)
 except SlotStructureError:
-    check("None with weekly_hours=3 (odd) raises SlotStructureError", True)
+    check("3+1 with invalid segment 3 raises SlotStructureError", True)
 
 try:
     parse_slot_structure("2+abc", 4)
@@ -152,6 +155,22 @@ for meeting in sec.meetings:
         f"Meeting slot '{meeting.slot_key}' allows theory",
         slot is not None and SubjectType.THEORY in slot.allowed_types,
     )
+
+# 3-hour subject generation test
+subj3 = _theory("IT303", weekly_hours=3)
+res3 = generate_sections_for_run(
+    run=run,
+    subjects=[subj3],
+    all_slots=ALL_SLOTS,
+    capable_teacher_ids_for={"IT303": ["T001"]},
+    teacher_availability_map={"T001": {}},
+    enrolled_counts={"IT303": 0},
+)
+sec3 = res3.sections[0]
+check("3-hour theory section has 2 meetings", len(sec3.meetings) == 2)
+check("First meeting is 2 hours", sec3.meetings[0].duration_hours == 2)
+check("Second meeting is 1 hour", sec3.meetings[1].duration_hours == 1)
+check("1-hour remainder has slot_part=1", sec3.meetings[1].slot_part == 1)
 
 # â”€â”€ Test 5: Theory section â€” Monday slot 1 never assigned â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

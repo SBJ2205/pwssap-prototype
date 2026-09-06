@@ -142,7 +142,32 @@ class GenerationRun:
     status: RunStatus = RunStatus.DRAFT
     choice_tag_configs: List[ChoiceTagConfig] = field(default_factory=list)
 
+    def __init__(
+        self,
+        id: int,
+        semesters: Optional[List[int]] = None,
+        status: RunStatus = RunStatus.DRAFT,
+        choice_tag_configs: Optional[List[ChoiceTagConfig]] = None,
+        semester: Optional[int] = None,
+    ):
+        self.id = id
+        if semesters is not None:
+            self.semesters = list(semesters)
+        elif semester is not None:
+            self.semesters = [semester]
+        else:
+            self.semesters = []
+        self.status = status
+        self.choice_tag_configs = choice_tag_configs or []
+
     @property
     def semester(self) -> int:
         """Compatibility property for code expecting a single semester."""
         return self.semesters[0] if self.semesters else 0
+
+    @semester.setter
+    def semester(self, val: int) -> None:
+        if self.semesters:
+            self.semesters[0] = val
+        else:
+            self.semesters = [val]

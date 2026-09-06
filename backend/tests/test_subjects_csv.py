@@ -91,6 +91,21 @@ def test_non_numeric_capacity_is_a_row_error():
     assert any("capacity" in e for e in result.row_errors[0].errors)
 
 
+def test_subtag_column_is_parsed():
+    csv_text = (
+        "subject_code,name,tag,subtag,semester,type,hours,capacity\n"
+        "IT501,Machine Learning,PE1,PE1-A,5,theory,3,60\n"
+        "IT502,Deep Learning,PE1,PE1-B,5,theory,3,60\n"
+    )
+    result = parse_subjects_csv(csv_text)
+    assert result.is_valid, result.row_errors
+    assert len(result.subjects) == 2
+    assert result.subjects[0].subtag == "PE1-A"
+    assert result.subjects[0].subject_tag == "PE1"
+    assert result.subjects[0].weekly_hours == 3
+    assert result.subjects[1].subtag == "PE1-B"
+
+
 def _run_all():
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_")]
     failures = 0

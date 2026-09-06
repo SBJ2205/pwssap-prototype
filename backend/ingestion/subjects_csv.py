@@ -1,27 +1,20 @@
 """CSV ingestion for the subject catalog (product decision #3).
 
 Parses raw subject CSV text into validated domain.models.Subject rows.
-Deliberately kept separate from:
-- the api/ layer, which only handles HTTP framing (file upload, status
-  codes, JSON shaping);
-- domain/validation.py, which only knows how to validate an
-  already-constructed Subject, not how to read/convert raw CSV columns.
-
-Required columns: subject_code, subject_name, subject_tag, semester,
-type, weekly_hours, capacity.
-Optional columns: slot_structure (or linked_pattern, an accepted alias
-for the same column — later phases decide how to parse it into concrete
-linked meetings; Phase 2 only captures the raw value).
+Required columns: subject_code, subject_name (or name), subject_tag (or tag),
+semester, type, weekly_hours (or hours), capacity.
+Optional columns: subtag, slot_structure (or linked_pattern).
 """
 import csv
 import io
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from domain.enums import SubjectType
 from domain.models import Subject
 from domain.validation import validate_subject
 
+# Canonical column names
 REQUIRED_COLUMNS = (
     "subject_code",
     "subject_name",
@@ -31,6 +24,13 @@ REQUIRED_COLUMNS = (
     "weekly_hours",
     "capacity",
 )
+
+COLUMN_ALIASES = {
+    "name": "subject_name",
+    "tag": "subject_tag",
+    "hours": "weekly_hours",
+    "linked_pattern": "slot_structure",
+}
 
 
 @dataclass
@@ -61,10 +61,23 @@ def _parse_int(raw: str, field_name: str, errors: List[str]) -> Optional[int]:
         return None
 
 
+def _canonicalize_row(raw_row: Dict[str, str]) -> Dict[str, str]:
+    normalized = {}
+    for k, v in raw_row.items():
+        if not k:
+            continue
+        clean_k = k.strip()
+        canon_k = COLUMN_ALIASES.get(clean_k, clean_k)
+        normalized[canon_k] = v.strip() if v else ""
+    return normalized
+
+
 def parse_subjects_csv(content: str) -> SubjectCsvResult:
     reader = csv.DictReader(io.StringIO(content))
-    header = reader.fieldnames or []
-    missing = [c for c in REQUIRED_COLUMNS if c not in header]
+    raw_header = reader.fieldnames or []
+    canonical_header = {COLUMN_ALIASES.get(h.strip(), h.strip()) for h in raw_header if h}
+
+    missing = [c for c in REQUIRED_COLUMNS if c not in canonical_header]
     if missing:
         return SubjectCsvResult(
             subjects=[],
@@ -78,14 +91,16 @@ def parse_subjects_csv(content: str) -> SubjectCsvResult:
     seen_codes = {}
     valid_type_values = {t.value for t in SubjectType}
 
-    for row_number, row in enumerate(reader, start=1):
+    for row_number, raw_row in enumerate(reader, start=1):
+        row = _canonicalize_row(raw_row)
         errors: List[str] = []
 
-        code = (row.get("subject_code") or "").strip()
-        name = (row.get("subject_name") or "").strip()
-        tag = (row.get("subject_tag") or "").strip()
-        raw_type = (row.get("type") or "").strip().lower()
-        slot_structure = (row.get("slot_structure") or row.get("linked_pattern") or "").strip() or None
+        code = row.get("subject_code", "")
+        name = row.get("subject_name", "")
+        tag = row.get("subject_tag", "")
+        subtag = row.get("subtag") or None
+        raw_type = row.get("type", "").lower()
+        slot_structure = row.get("slot_structure") or None
 
         semester = _parse_int(row.get("semester", ""), "semester", errors)
         weekly_hours = _parse_int(row.get("weekly_hours", ""), "weekly_hours", errors)
@@ -97,7 +112,7 @@ def parse_subjects_csv(content: str) -> SubjectCsvResult:
         elif raw_type in valid_type_values:
             subject_type = SubjectType(raw_type)
         else:
-            subject_type = raw_type  # kept as-is so validate_subject reports the exact bad value
+            subject_type = raw_type
 
         if code and code in seen_codes:
             errors.append(f"Duplicate subject_code '{code}' (first seen on row {seen_codes[code]}).")
@@ -106,8 +121,6 @@ def parse_subjects_csv(content: str) -> SubjectCsvResult:
             row_errors.append(RowError(row_number=row_number, errors=errors))
             continue
 
-        # errors is empty at this point, so _parse_int already guaranteed
-        # these three are not None -- narrow the type for the checker.
         assert semester is not None and weekly_hours is not None and capacity is not None
 
         subject = Subject(
@@ -115,9 +128,10 @@ def parse_subjects_csv(content: str) -> SubjectCsvResult:
             subject_name=name,
             subject_tag=tag,
             semester=semester,
-            type=subject_type,  # type: ignore[arg-type]  -- may be an invalid raw string here; validate_subject below reports it
+            type=subject_type,  # type: ignore[arg-type]
             weekly_hours=weekly_hours,
             capacity=capacity,
+            subtag=subtag,
             slot_structure=slot_structure,
         )
         domain_errors = validate_subject(subject)
