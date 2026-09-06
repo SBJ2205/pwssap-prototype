@@ -14,7 +14,29 @@ export const getSubjectTags = (semester) => {
   return client.get("/admin/subjects/tags", { params }).then(r => r.data);
 };
 
-// GET /admin/students/{roll_number}/choices?run_id=N  →  [{choice_column, numeric_value, tag}]
+// GET /admin/subjects/choice-groups  →  {choice_groups: {tag: [subtag1, subtag2]}}
+export const getSubjectChoiceGroups = (semester) => {
+  const params = semester != null ? { semester } : {};
+  return client.get("/admin/subjects/choice-groups", { params }).then(r => r.data);
+};
+
+// GET /students/{roll_number}/available-choices  →  {roll_number, semester, available_choices, subjects}
+export const getStudentAvailableChoices = (rollNumber) =>
+  client.get(`/students/${rollNumber}/available-choices`).then(r => r.data);
+
+// GET /students/{roll_number}/lock-in  →  {roll_number, locked_in, complete}
+export const getStudentLockIn = (rollNumber) =>
+  client.get(`/students/${rollNumber}/lock-in`).then(r => r.data);
+
+// PUT /students/{roll_number}/lock-in  body: {choices: {tag: subtag}}
+export const saveStudentLockIn = (rollNumber, choices) =>
+  client.put(`/students/${rollNumber}/lock-in`, { choices }).then(r => r.data);
+
+// GET /students/{roll_number}/enrolled-subjects  →  [{subject_code, subject_name, ...}]
+export const getStudentEnrolledSubjects = (rollNumber) =>
+  client.get(`/students/${rollNumber}/enrolled-subjects`).then(r => r.data);
+
+// GET /admin/students/{roll_number}/choices?run_id=N  →  [{choice_column, numeric_value, tag}] (legacy)
 export const getStudentChoices = (rollNumber, runId) =>
   client.get(`/admin/students/${rollNumber}/choices`, { params: { run_id: runId } }).then(r => r.data);
 
