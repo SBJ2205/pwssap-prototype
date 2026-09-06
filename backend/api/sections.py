@@ -70,7 +70,7 @@ def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
     for m in section.meetings:
         sk = m.slot_key
         slot = slot_lookup.get(sk) if sk else None
-        start_t, end_t = _get_meeting_times(slot, m.duration_hours, m.slot_part)
+        start_t, end_t = get_meeting_times(slot, m.duration_hours, m.slot_part)
         enriched_meetings.append({
             "slot_key": sk or None,
             "duration_hours": m.duration_hours,
@@ -85,6 +85,7 @@ def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
         "subject_code": section.subject_code,
         "subject_name": subject.subject_name if subject else None,
         "subject_type": subject.type.value if subject else None,
+        "semester": subject.semester if subject else None,
         "label": section.label,
         "teacher_id": section.teacher_id,
         "teacher_name": teacher.teacher_name if teacher else None,
@@ -239,10 +240,13 @@ def get_run_summary(run_id: int, store: InMemoryStore = Depends(get_store)):
                 "section_label": sd["label"],
                 "subject_code": sd["subject_code"],
                 "subject_name": sd["subject_name"],
+                "semester": sd.get("semester"),
                 "teacher_id": sd["teacher_id"],
                 "teacher_name": sd["teacher_name"],
                 "enrolled_count": sd["enrolled_count"],
                 "slot_key": meeting["slot_key"],
+                "duration_hours": meeting.get("duration_hours", 2),
+                "slot_part": meeting.get("slot_part", 0),
                 "start_time": meeting["start_time"],
                 "end_time": meeting["end_time"],
             }

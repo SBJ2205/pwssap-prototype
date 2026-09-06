@@ -61,13 +61,13 @@ export default function StudentTimetable({ session }) {
     );
   }
 
-  // Build a grid: { "Mon-1": entry_object }
-  // Each entry may have multiple meetings.
+  // Build a grid: { "Mon-1": [ { ...entry, activeMeeting: meeting } ] }
   const grid = {};
   for (const entry of entries) {
     for (const meeting of entry.meetings) {
       if (meeting.slot_key) {
-        grid[meeting.slot_key] = { ...entry, activeMeeting: meeting };
+        if (!grid[meeting.slot_key]) grid[meeting.slot_key] = [];
+        grid[meeting.slot_key].push({ ...entry, activeMeeting: meeting });
       }
     }
   }
@@ -80,7 +80,7 @@ export default function StudentTimetable({ session }) {
       />
 
       {/* Subject list */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10, marginBottom: 20 }}>
         {entries.map(e => (
           <div key={e.section_id} style={{
             background: "#fff",
@@ -105,10 +105,21 @@ export default function StudentTimetable({ session }) {
             <div style={{ fontSize: 11, color: "#555" }}>
               <div>📋 {e.section_label}</div>
               <div>👤 {e.teacher_name || e.teacher_id || "—"}</div>
-              <div style={{ marginTop: 4, color: "#888" }}>
+              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
                 {e.meetings.map((m, i) => (
-                  <span key={i} style={{ marginRight: 6 }}>
-                    {m.day} {m.start_time}–{m.end_time}
+                  <span
+                    key={i}
+                    style={{
+                      background: m.duration_hours === 1 ? "#F0F9FF" : "#F4F8FC",
+                      border: m.duration_hours === 1 ? "1px solid #7DD3FC" : "1px solid #B5D4F4",
+                      borderRadius: 4,
+                      padding: "2px 6px",
+                      fontSize: 10,
+                      color: m.duration_hours === 1 ? "#0369A1" : "#0C447C",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {m.day} {m.start_time}–{m.end_time} ({m.duration_hours || 2}h)
                   </span>
                 ))}
               </div>
@@ -119,9 +130,9 @@ export default function StudentTimetable({ session }) {
 
       {/* Weekly grid */}
       <Card>
-        <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>Weekly Grid</div>
+        <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>Weekly Schedule Grid</div>
         <div style={{ fontSize: 12, color: "#888", marginBottom: 14 }}>
-          Colour-coded by how well each assigned slot matched your submitted time preferences.
+          Exact class schedule with accurate 2-hour and 1-hour remainder intervals.
         </div>
 
         {/* Header */}
@@ -146,32 +157,50 @@ export default function StudentTimetable({ session }) {
 
             {DAYS.map(day => {
               const key = slotKey(day, slotNum);
-              const entry = grid[key];
+              const cellEntries = grid[key] || [];
               const isMon1 = day === "Mon" && slotNum === 1;
-              const bg = entry ? "#E6F1FB" : (isMon1 ? "#f0efeb" : "#f9f8f5");
+              const hasEntries = cellEntries.length > 0;
+              const bg = hasEntries ? "#fff" : (isMon1 ? "#f0efeb" : "#f9f8f5");
               return (
                 <div key={day} style={{
                   background: bg,
                   borderRadius: 6,
-                  padding: entry ? "8px 10px" : "6px",
-                  minHeight: 60,
-                  border: "0.5px solid #e5e3dc",
-                  opacity: isMon1 && !entry ? 0.4 : 1,
+                  padding: "6px",
+                  minHeight: 64,
+                  border: hasEntries ? "1px solid #B5D4F4" : "0.5px solid #e5e3dc",
+                  opacity: isMon1 && !hasEntries ? 0.4 : 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
                 }}>
-                  {entry && (
-                    <>
-                      <div style={{ fontSize: 10, fontWeight: 600, color: "#333", lineHeight: 1.3 }}>
-                        {entry.subject_name || entry.subject_code}
+                  {cellEntries.map((item, idx) => {
+                    const isOneHour = item.activeMeeting?.duration_hours === 1;
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          background: isOneHour ? "#F0F9FF" : "#E6F1FB",
+                          border: isOneHour ? "1px solid #7DD3FC" : "1px solid #B5D4F4",
+                          borderRadius: 4,
+                          padding: "4px 6px",
+                        }}
+                      >
+                        <div style={{ fontSize: 10, fontWeight: 700, color: isOneHour ? "#0369A1" : "#0C447C", lineHeight: 1.3 }}>
+                          {item.subject_code} ({item.section_label})
+                        </div>
+                        <div style={{ fontSize: 9, color: "#333", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {item.subject_name}
+                        </div>
+                        <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>
+                          👤 {item.teacher_name || item.teacher_id || "—"}
+                        </div>
+                        <div style={{ fontSize: 9, color: isOneHour ? "#0369A1" : "#555", marginTop: 2, fontWeight: 600 }}>
+                          ⏰ {item.activeMeeting?.start_time}–{item.activeMeeting?.end_time} {isOneHour && "(1h)"}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>
-                        {entry.teacher_name || entry.teacher_id || "—"}
-                      </div>
-                      <div style={{ fontSize: 9, color: "#999", marginTop: 1 }}>
-                        {entry.section_label}
-                      </div>
-                    </>
-                  )}
-                  {isMon1 && !entry && (
+                    );
+                  })}
+                  {isMon1 && !hasEntries && (
                     <div style={{ fontSize: 9, color: "#ccc", display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
                       reserved
                     </div>

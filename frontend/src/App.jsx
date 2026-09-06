@@ -2,8 +2,9 @@ import "./App.css";
 import { useCallback, useEffect, useState } from "react";
 
 
-import { getStudents, getTeachers } from "./api/catalog";
+import { getStudents, getTeachers, getStudentLockIn } from "./api/catalog";
 import { listRuns } from "./api/runs";
+import { getCycleStatus } from "./api/cycle";
 import { setRole as setApiRole } from "./api/client";
 import Sidebar from "./components/Sidebar";
 import { ErrorState, LoadingState } from "./components/ui";
@@ -21,6 +22,7 @@ import AdminTimetable from "./pages/admin/AdminTimetable";
 import AdminOverrides from "./pages/admin/AdminOverrides";
 
 // Student pages
+import StudentLockIn from "./pages/student/StudentLockIn";
 import StudentPrefs from "./pages/student/StudentPrefs";
 import StudentFacultyPrefs from "./pages/student/StudentFacultyPrefs";
 import StudentTimetable from "./pages/student/StudentTimetable";
@@ -38,6 +40,7 @@ const PAGE_COMPONENTS = {
   "admin-solver":       AdminSolver,
   "admin-timetable":    AdminTimetable,
   "admin-overrides":    AdminOverrides,
+  "student-lockin":     StudentLockIn,
   "student-prefs":         StudentPrefs,
   "student-facultyprefs":  StudentFacultyPrefs,
   "student-timetable":     StudentTimetable,
@@ -47,7 +50,7 @@ const PAGE_COMPONENTS = {
 // Derive initial page from role.
 function defaultPage(role) {
   if (role === "admin") return "admin-dashboard";
-  if (role === "student") return "student-prefs";
+  if (role === "student") return "student-lockin";
   if (role === "teacher") return "teacher-timetable";
   return null;
 }
@@ -92,8 +95,9 @@ export default function App() {
     else setApiRole("student"); // safe default
   }, [session]);
 
-  // Runs state for admin context.
+  // Runs & Cycle state for admin context.
   const [runs, setRuns] = useState([]);
+  const [cycleStatus, setCycleStatus] = useState(null);
   const [activeRunIdState, setActiveRunIdState] = useState(() => {
     const saved = localStorage.getItem("pwssap_active_run_id");
     return saved ? parseInt(saved, 10) : null;
@@ -116,7 +120,18 @@ export default function App() {
     }
   }, [session]);
 
-  // Load global catalog (students + teachers) and runs once logged in.
+  const refreshCycle = useCallback(async () => {
+    if (session?.role !== "admin") return null;
+    try {
+      const data = await getCycleStatus();
+      setCycleStatus(data);
+      return data;
+    } catch {
+      return null;
+    }
+  }, [session]);
+
+  // Load global catalog (students + teachers), cycle status and runs once logged in.
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
@@ -130,14 +145,16 @@ export default function App() {
     ];
     if (session.role === "admin") {
       promises.push(listRuns().catch(() => []));
+      promises.push(getCycleStatus().catch(() => null));
     }
 
     Promise.all(promises)
-      .then(([s, t, r]) => {
+      .then(([s, t, r, cyc]) => {
         if (cancelled) return;
         setStudents(s);
         setTeachers(t);
         if (r) setRuns(r);
+        if (cyc) setCycleStatus(cyc);
       })
       .catch(e => {
         if (!cancelled) setCatalogError(e.message || "Failed to load catalog.");
@@ -151,13 +168,29 @@ export default function App() {
 
   const reload = useCallback(() => {
     setReloadTick(t => t + 1);
-  }, []);
+    if (session?.role === "admin") {
+      refreshCycle();
+    }
+  }, [session, refreshCycle]);
 
-  function login(role, identity) {
+  async function login(role, identity) {
     const s = { role, identity };
     saveSession(s);
     setSession(s);
-    setPage(defaultPage(role));
+    if (role === "student") {
+      try {
+        const lockRes = await getStudentLockIn(identity);
+        if (lockRes && lockRes.complete) {
+          setPage("student-prefs");
+        } else {
+          setPage("student-lockin");
+        }
+      } catch {
+        setPage("student-lockin");
+      }
+    } else {
+      setPage(defaultPage(role));
+    }
   }
 
   function logout() {
@@ -167,6 +200,7 @@ export default function App() {
     setStudents([]);
     setTeachers([]);
     setRuns([]);
+    setCycleStatus(null);
     setActiveRunId(null);
   }
 
@@ -197,6 +231,10 @@ export default function App() {
     activeRunId: activeRun?.id || null,
     setActiveRunId,
     refreshRuns,
+    cycleStatus,
+    refreshCycle,
+    studentRoll: session.role === "student" ? session.identity : null,
+    onNavigate: setPage,
   };
 
   return (

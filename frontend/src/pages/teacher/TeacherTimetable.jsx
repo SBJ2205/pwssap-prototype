@@ -42,13 +42,17 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
 
   const schedule = timetable?.schedule || [];
 
+  const totalAssignedHours = schedule.reduce((sum, sec) => (
+    sum + (sec.meetings || []).reduce((mSum, m) => mSum + (m.duration_hours || 2), 0)
+  ), 0);
+
   // Build a slot_key -> [section_entry] map
   const grid = {};
   for (const sec of schedule) {
     for (const m of sec.meetings) {
       if (m.slot_key) {
         if (!grid[m.slot_key]) grid[m.slot_key] = [];
-        grid[m.slot_key].push(sec);
+        grid[m.slot_key].push({ ...sec, activeMeeting: m });
       }
     }
   }
@@ -58,7 +62,7 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <PageHeader
           title="My Timetable"
-          sub={`${timetable?.teacher_name || teacherId} · ${schedule.length} section(s) assigned`}
+          sub={`${timetable?.teacher_name || teacherId} · ${schedule.length} section(s) assigned · ${totalAssignedHours} teaching hrs/week`}
         />
 
         {/* Run Scope Selector */}
@@ -94,7 +98,7 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
       {schedule.length > 0 && (
         <>
           {/* Section cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10, marginBottom: 20 }}>
             {schedule.map(sec => (
               <div key={sec.section_id} style={{
                 background: "#fff", border: "1px solid #e5e3dc",
@@ -116,10 +120,21 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
                 </div>
                 <div style={{ fontSize: 11, color: "#555" }}>
                   <div>📋 {sec.section_label} · {sec.enrolled_count}/{sec.capacity} enrolled</div>
-                  <div style={{ marginTop: 4, color: "#888" }}>
+                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
                     {sec.meetings.map((m, i) => (
-                      <span key={i} style={{ marginRight: 6 }}>
-                        {m.day} {m.start_time}–{m.end_time}
+                      <span
+                        key={i}
+                        style={{
+                          background: m.duration_hours === 1 ? "#E1F5EE" : "#E5F5EF",
+                          border: m.duration_hours === 1 ? "1px solid #7AD1B5" : "1px solid #C0DD97",
+                          borderRadius: 4,
+                          padding: "2px 6px",
+                          fontSize: 10,
+                          color: "#1D9E75",
+                          fontWeight: 500,
+                        }}
+                      >
+                        {m.day} {m.start_time}–{m.end_time} ({m.duration_hours || 2}h)
                       </span>
                     ))}
                   </div>
@@ -130,7 +145,7 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
 
           {/* Weekly grid */}
           <Card>
-            <div style={{ fontWeight: 600, marginBottom: 14, fontSize: 13 }}>Weekly Grid</div>
+            <div style={{ fontWeight: 600, marginBottom: 14, fontSize: 13 }}>Weekly Teaching Grid</div>
             <div style={{ display: "grid", gridTemplateColumns: "110px repeat(5, 1fr)", gap: 4, marginBottom: 4 }}>
               <div />
               {DAYS.map(d => (
@@ -153,15 +168,25 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
                     <div key={day} style={{
                       background: entries.length > 0 ? "#E5F5EF" : "#f9f8f5",
                       borderRadius: 6, padding: entries.length > 0 ? "8px 10px" : "6px",
-                      minHeight: 60, border: "0.5px solid #e5e3dc",
+                      minHeight: 64, border: entries.length > 0 ? "1px solid #7AD1B5" : "0.5px solid #e5e3dc",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
                     }}>
                       {entries.map((sec, i) => (
-                        <div key={i}>
-                          <div style={{ fontSize: 10, fontWeight: 600, color: "#1D9E75", lineHeight: 1.3 }}>
-                            {sec.subject_name || sec.subject_code}
+                        <div key={i} style={{
+                          background: "#fff",
+                          border: "1px solid #7AD1B5",
+                          borderRadius: 4,
+                          padding: "4px 6px",
+                        }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: "#1D9E75", lineHeight: 1.3 }}>
+                            {sec.subject_name || sec.subject_code} ({sec.section_label})
                           </div>
-                          <div style={{ fontSize: 9, color: "#555", marginTop: 1 }}>{sec.section_label}</div>
-                          <div style={{ fontSize: 9, color: "#888" }}>{sec.enrolled_count} students</div>
+                          <div style={{ fontSize: 9, color: "#0F5132", marginTop: 2, fontWeight: 600 }}>
+                            ⏰ {sec.activeMeeting?.start_time}–{sec.activeMeeting?.end_time} {sec.activeMeeting?.duration_hours === 1 && "(1h)"}
+                          </div>
+                          <div style={{ fontSize: 9, color: "#888", marginTop: 1 }}>{sec.enrolled_count} students enrolled</div>
                         </div>
                       ))}
                     </div>

@@ -69,7 +69,7 @@ export const ALL_SEMESTERS = [...ODD_SEMESTERS, ...EVEN_SEMESTERS].sort((a, b) =
 export const NAV = [
   // Admin pages
   { key: "admin-dashboard",    label: "Dashboard",           color: "#185FA5", group: "admin" },
-  { key: "admin-runs",         label: "Runs & Semesters",    color: "#1D9E75", group: "admin" },
+  { key: "admin-runs",         label: "Solver Cycle",        color: "#1D9E75", group: "admin" },
   { key: "admin-subjects",     label: "Subjects",            color: "#7F77DD", group: "admin" },
   { key: "admin-students",     label: "Students",            color: "#C2478D", group: "admin" },
   { key: "admin-teachers",     label: "Teachers",            color: "#D85A30", group: "admin" },
@@ -79,6 +79,7 @@ export const NAV = [
   { key: "admin-overrides",    label: "Touch-ups",           color: "#D85A30", group: "admin" },
 
   // Student pages
+  { key: "student-lockin",        label: "Elective Lock-in",    color: "#185FA5", group: "student" },
   { key: "student-prefs",         label: "Time Preferences",    color: "#7F77DD", group: "student" },
   { key: "student-facultyprefs",  label: "Faculty Preferences", color: "#C2478D", group: "student" },
   { key: "student-timetable",     label: "My Timetable",        color: "#BA7517", group: "student" },

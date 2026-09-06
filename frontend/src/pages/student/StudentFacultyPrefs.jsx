@@ -13,7 +13,7 @@ const FACULTY_RATING_META = {
   3: RATING_META[3],
 };
 
-export default function StudentFacultyPrefs({ session }) {
+export default function StudentFacultyPrefs({ session, onNavigate, setPage }) {
   const { identity: rollNumber } = session;
 
   const [subjects,         setSubjects]         = useState([]);
@@ -23,6 +23,7 @@ export default function StudentFacultyPrefs({ session }) {
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState(null);
+  const [isLockInRequired, setIsLockInRequired] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
 
   useEffect(() => {
@@ -30,10 +31,11 @@ export default function StudentFacultyPrefs({ session }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
+    setIsLockInRequired(false);
 
     Promise.all([
       getSubjects().catch(() => []),
-      getRankableSubjects(rollNumber).catch(() => []),
+      getRankableSubjects(rollNumber),
       getFacultyPrefs(rollNumber).catch(() => ({ preferences: {} })),
     ])
       .then(([subjectsData, rankableData, prefsData]) => {
@@ -43,7 +45,13 @@ export default function StudentFacultyPrefs({ session }) {
         setPrefs(prefsData?.preferences || {});
       })
       .catch(e => {
-        if (!cancelled) setError(apiErrorMessage(e));
+        if (!cancelled) {
+          const msg = apiErrorMessage(e);
+          if (e.response?.status === 409 || msg.toLowerCase().includes("lock-in")) {
+            setIsLockInRequired(true);
+          }
+          setError(msg);
+        }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
 
@@ -120,16 +128,45 @@ export default function StudentFacultyPrefs({ session }) {
         a mismatch is always a soft penalty, never a hard restriction.
       </InfoBox>
 
-      {error && (
-        <div style={{ background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#791F1F", marginBottom: 12 }}>
-          ✕ {error}
-        </div>
-      )}
-      {saveMsg && (
-        <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12 }}>
-          ✓ {saveMsg}
-        </div>
-      )}
+      {isLockInRequired ? (
+        <Card>
+          <div style={{ textAlign: "center", padding: "30px 20px" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#111", marginBottom: 6 }}>
+              Elective Lock-In Required First
+            </div>
+            <div style={{ fontSize: 13, color: "#666", maxWidth: 520, margin: "0 auto 18px", lineHeight: 1.5 }}>
+              Department curriculum rules require you to select and confirm your elective subject track before setting faculty preferences.
+            </div>
+            <button
+              onClick={() => (onNavigate || setPage)?.("student-lockin")}
+              style={{
+                padding: "8px 20px",
+                background: "#185FA5",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Go to Elective Lock-In →
+            </button>
+          </div>
+        </Card>
+      ) : (
+        <>
+          {error && (
+            <div style={{ background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#791F1F", marginBottom: 12 }}>
+              ✕ {error}
+            </div>
+          )}
+          {saveMsg && (
+            <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12 }}>
+              ✓ {saveMsg}
+            </div>
+          )}
 
       <div style={{ display: "grid", gridTemplateColumns: "190px 1fr", gap: 14 }}>
         {/* Left: summary */}
@@ -253,6 +290,8 @@ export default function StudentFacultyPrefs({ session }) {
           </button>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

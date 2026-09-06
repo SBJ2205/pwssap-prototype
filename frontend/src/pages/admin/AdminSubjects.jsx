@@ -250,6 +250,14 @@ export default function AdminSubjects() {
         )}
       </Card>
 
+      {/* Cycle Elective Configuration */}
+      <CycleElectiveConfigCard
+        subjects={subjects}
+        onConfigSaved={() => {
+          loadCatalog();
+        }}
+      />
+
       {/* Catalog Display */}
       <Card>
         {/* Controls: Search & Semester Tabs */}
@@ -259,31 +267,34 @@ export default function AdminSubjects() {
             <button
               onClick={() => setSelectedSemester("all")}
               style={{
-                padding: "5px 12px",
+                padding: "4px 10px",
                 borderRadius: 6,
-                border: "1px solid #d1cfc7",
-                background: selectedSemester === "all" ? "#185FA5" : "#fff",
-                color: selectedSemester === "all" ? "#fff" : "#444",
+                border: "1px solid",
+                borderColor: selectedSemester === "all" ? "#185FA5" : "#ddd",
+                background: selectedSemester === "all" ? "#E6F1FB" : "#fff",
+                color: selectedSemester === "all" ? "#0C447C" : "#555",
                 fontWeight: selectedSemester === "all" ? 600 : 400,
                 fontSize: 12,
                 cursor: "pointer",
               }}
             >
-              All Semesters ({subjects.length})
+              All ({subjects.length})
             </button>
             {ALL_SEMESTERS.map(sem => {
               const count = subjects.filter(s => s.semester === sem).length;
+              if (count === 0) return null;
               return (
                 <button
                   key={sem}
-                  onClick={() => setSelectedSemester(sem)}
+                  onClick={() => setSelectedSemester(String(sem))}
                   style={{
-                    padding: "5px 10px",
+                    padding: "4px 10px",
                     borderRadius: 6,
-                    border: "1px solid #d1cfc7",
-                    background: selectedSemester === sem ? "#185FA5" : "#fff",
-                    color: selectedSemester === sem ? "#fff" : "#444",
-                    fontWeight: selectedSemester === sem ? 600 : 400,
+                    border: "1px solid",
+                    borderColor: selectedSemester === String(sem) ? "#185FA5" : "#ddd",
+                    background: selectedSemester === String(sem) ? "#E6F1FB" : "#fff",
+                    color: selectedSemester === String(sem) ? "#0C447C" : "#555",
+                    fontWeight: selectedSemester === String(sem) ? 600 : 400,
                     fontSize: 12,
                     cursor: "pointer",
                   }}
@@ -300,7 +311,7 @@ export default function AdminSubjects() {
               type="text"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search code, name, tag…"
+              placeholder="Search code, name, tag, subtag…"
               style={{
                 padding: "6px 12px",
                 border: "1px solid #ccc",
@@ -328,11 +339,12 @@ export default function AdminSubjects() {
                   <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Code</th>
                   <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Subject Name</th>
                   <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Tag</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Subtag</th>
                   <th style={{ textAlign: "center", padding: "8px 10px", color: "#555" }}>Semester</th>
                   <th style={{ textAlign: "center", padding: "8px 10px", color: "#555" }}>Type</th>
                   <th style={{ textAlign: "center", padding: "8px 10px", color: "#555" }}>Weekly Hrs</th>
                   <th style={{ textAlign: "center", padding: "8px 10px", color: "#555" }}>Capacity</th>
-                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Slot Structure</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Structure</th>
                 </tr>
               </thead>
               <tbody>
@@ -345,9 +357,18 @@ export default function AdminSubjects() {
                     </td>
                     <td style={{ ...td, fontWeight: 500 }}>{s.subject_name}</td>
                     <td style={td}>
-                      <Badge color={s.subject_tag === "CORE" ? "blue" : "amber"}>
+                      <Badge color={s.subject_tag === "program_core" || s.subject_tag === "CORE" ? "blue" : "amber"}>
                         {s.subject_tag || "—"}
                       </Badge>
+                    </td>
+                    <td style={{ ...td, color: "#64748b" }}>
+                      {s.subtag ? (
+                        <span style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: 4, fontWeight: 500 }}>
+                          {s.subtag}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td style={{ ...td, textAlign: "center" }}>Sem {s.semester}</td>
                     <td style={{ ...td, textAlign: "center" }}>
@@ -355,10 +376,15 @@ export default function AdminSubjects() {
                         {s.type === "lab" ? "Lab" : "Theory"}
                       </Badge>
                     </td>
-                    <td style={{ ...td, textAlign: "center" }}>{s.weekly_hours}h</td>
+                    <td style={{ ...td, textAlign: "center" }}>
+                      {s.weekly_hours}h
+                      {s.weekly_hours === 3 && (
+                        <span style={{ display: "block", fontSize: 10, color: "#0284c7" }}>2h + 1h rem</span>
+                      )}
+                    </td>
                     <td style={{ ...td, textAlign: "center", fontWeight: 600 }}>{s.capacity}</td>
                     <td style={{ ...td, color: "#777", fontSize: 11 }}>
-                      {s.slot_structure || "Standard"}
+                      {s.weekly_hours === 3 ? "2+1" : (s.slot_structure || "Standard")}
                     </td>
                   </tr>
                 ))}
@@ -368,5 +394,160 @@ export default function AdminSubjects() {
         )}
       </Card>
     </div>
+  );
+}
+
+function CycleElectiveConfigCard({ onConfigSaved }) {
+  const [cycleData, setCycleData] = useState(null);
+  const [tagMap, setTagMap] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    import("../../api/cycle").then(({ getCycleStatus }) => {
+      getCycleStatus()
+        .then(data => {
+          if (cancelled) return;
+          setCycleData(data);
+          const map = {};
+          (data?.tags_detail || []).forEach(t => {
+            map[t.tag] = Boolean(t.is_choice_based);
+          });
+          setTagMap(map);
+        })
+        .catch(e => {
+          if (!cancelled) setErr(apiErrorMessage(e));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleToggle = (tag) => {
+    setTagMap(prev => ({
+      ...prev,
+      [tag]: !prev[tag],
+    }));
+    setMsg(null);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMsg(null);
+    setErr(null);
+    try {
+      const { setCycleChoiceTags } = await import("../../api/cycle");
+      const updated = await setCycleChoiceTags(tagMap);
+      setCycleData(updated);
+      setMsg("Cycle elective tag configuration saved successfully!");
+      if (onConfigSaved) onConfigSaved();
+    } catch (e) {
+      setErr(apiErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const tagsDetail = cycleData?.tags_detail || [];
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a" }}>
+            Cycle Elective Choice Configuration
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b" }}>
+            Configure which subject tags represent student electives. Students lock in exactly one subtag for each choice tag.
+          </div>
+        </div>
+        {tagsDetail.length > 0 && (
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              background: "#185FA5",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 14px",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: saving ? "not-allowed" : "pointer",
+            }}
+          >
+            {saving ? "Saving…" : "Save Elective Config"}
+          </button>
+        )}
+      </div>
+
+      {msg && (
+        <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#27500A", marginBottom: 12 }}>
+          ✓ {msg}
+        </div>
+      )}
+      {err && (
+        <div style={{ background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#791F1F", marginBottom: 12 }}>
+          ✕ {err}
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ fontSize: 12, color: "#888", padding: "8px 0" }}>Loading cycle tag configurations…</div>
+      ) : tagsDetail.length === 0 ? (
+        <div style={{ fontSize: 12, color: "#64748b", padding: "8px 0" }}>
+          No subject tags found in catalog. Upload subjects above to configure electives.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+          {tagsDetail.map(t => {
+            const isChoice = Boolean(tagMap[t.tag]);
+            return (
+              <div
+                key={t.tag}
+                onClick={() => handleToggle(t.tag)}
+                style={{
+                  border: `1.5px solid ${isChoice ? "#185FA5" : "#e2e8f0"}`,
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  background: isChoice ? "#f0f7ff" : "#fff",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: isChoice ? "#185FA5" : "#1e293b" }}>
+                    {t.tag}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                    {t.subtags?.length > 0 ? (
+                      <span>Subtags: {t.subtags.join(", ")}</span>
+                    ) : (
+                      <span>No subtags defined</span>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={isChoice}
+                  onChange={() => handleToggle(t.tag)}
+                  style={{ cursor: "pointer", width: 16, height: 16 }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 }

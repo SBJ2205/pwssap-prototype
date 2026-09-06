@@ -1,19 +1,18 @@
 import { useEffect, useState, useMemo } from "react";
-import { getStudents, importStudents, getStudentChoices } from "../../api/catalog";
+import {
+  getStudents,
+  importStudents,
+  getStudentLockIn,
+  getStudentEnrolledSubjects,
+} from "../../api/catalog";
 import { getTimePrefs, getFacultyPrefs } from "../../api/preferences";
 import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
 import { downloadCsv, parseCsvText, generateStudentCsvTemplate } from "../../utils/csv";
-import { RATING_META, td } from "../../constants";
+import { td, RATING_META } from "../../constants";
 import { Card, PageHeader, Badge, InfoBox } from "../../components/ui";
-import RunContextBanner from "../../components/RunContextBanner";
 
 export default function AdminStudents({
-  runs = [],
-  activeRun,
-  activeRunId,
-  setActiveRunId,
   reload,
-  setPage,
 }) {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,7 +31,8 @@ export default function AdminStudents({
 
   // Selected student for preferences inspection
   const [inspectStudent, setInspectStudent] = useState(null);
-  const [studentChoices, setStudentChoices] = useState([]);
+  const [studentLockIn, setStudentLockIn] = useState(null);
+  const [studentEnrolled, setStudentEnrolled] = useState([]);
   const [studentTimePrefs, setStudentTimePrefs] = useState(null);
   const [studentFacultyPrefs, setStudentFacultyPrefs] = useState(null);
   const [inspectLoading, setInspectLoading] = useState(false);
@@ -75,17 +75,13 @@ export default function AdminStudents({
 
   async function handleImport() {
     if (!selectedFile) return;
-    if (!activeRunId) {
-      setUploadErrors({ message: "An active run is required to import students.", row_errors: [] });
-      return;
-    }
     setUploading(true);
     setUploadErrors(null);
     setUploadSuccess(null);
 
     try {
-      const res = await importStudents(selectedFile, activeRunId);
-      setUploadSuccess(`Successfully imported ${res.count} students for Run #${res.run_id} (Semester ${res.semester})!`);
+      const res = await importStudents(selectedFile);
+      setUploadSuccess(`Successfully imported ${res.count} student(s) across department cohorts!`);
       setSelectedFile(null);
       setPreviewData(null);
       await loadStudentRoster();
@@ -102,34 +98,30 @@ export default function AdminStudents({
     }
   }
 
-  // Load preferences and run choices when inspecting a student
+  // Load preferences, lock-in, and enrolled subjects when inspecting a student
   async function openStudentInspector(student) {
     setInspectStudent(student);
     setInspectLoading(true);
-    setStudentChoices([]);
+    setStudentLockIn(null);
+    setStudentEnrolled([]);
     setStudentTimePrefs(null);
     setStudentFacultyPrefs(null);
 
     try {
-      const promises = [
+      const [lockData, enrolledData, tp, fp] = await Promise.all([
+        getStudentLockIn(student.roll_number).catch(() => null),
+        getStudentEnrolledSubjects(student.roll_number).catch(() => []),
         getTimePrefs(student.roll_number).catch(() => null),
         getFacultyPrefs(student.roll_number).catch(() => null),
-      ];
-      if (activeRunId) {
-        promises.push(getStudentChoices(student.roll_number, activeRunId).catch(() => []));
-      }
-      const [tp, fp, sc] = await Promise.all(promises);
+      ]);
+      if (lockData) setStudentLockIn(lockData);
+      if (enrolledData) setStudentEnrolled(enrolledData);
       if (tp) setStudentTimePrefs(tp.preferences || {});
       if (fp) setStudentFacultyPrefs(fp.preferences || {});
-      if (sc) setStudentChoices(sc || []);
     } finally {
       setInspectLoading(false);
     }
   }
-
-  const activeChoices = useMemo(() => {
-    return (activeRun?.choice_tag_configs || []).filter(c => c.is_choice_based);
-  }, [activeRun]);
 
   const filteredStudents = useMemo(() => {
     return students.filter(s => {
@@ -149,35 +141,16 @@ export default function AdminStudents({
   return (
     <div>
       <PageHeader
-        title="Student Roster & Choices"
-        sub="Ingest student cohort data and inspect elective choices and preference submissions."
+        title="Student Roster & Elective Choices"
+        sub="Ingest department student cohorts and inspect elective lock-ins and preference submissions."
       />
 
-      <RunContextBanner
-        activeRun={activeRun}
-        runs={runs}
-        onSelectRun={setActiveRunId}
-        onGoToRuns={() => setPage && setPage("admin-runs")}
-      />
-
-      <InfoBox title="Run-Scoped Student Import">
-        Unlike subjects, student CSV import is <strong>strictly scoped to the active run</strong>.
-        {activeChoices.length > 0 ? (
-          <span>
-            {" "}For this run, the CSV must include <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>roll_number, name, semester</code> and{" "}
-            <strong>{activeChoices.length} choice column(s)</strong>:{" "}
-            {activeChoices.map((_, i) => (
-              <code key={i} style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3, marginRight: 4 }}>
-                choice_{i + 1}
-              </code>
-            ))}
-            (mapping to: {activeChoices.map(c => `${c.tag} = ${c.numeric_value}`).join(", ")}).
-          </span>
-        ) : (
-          <span>
-            {" "}This run has no choice-based tags, so only <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>roll_number, name, semester</code> are expected.
-          </span>
-        )}
+      <InfoBox title="Department Student Roster">
+        Student CSV import accepts students belonging to any active semester in the department with columns:{" "}
+        <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>
+          roll_number, name, semester
+        </code>.
+        Elective courses are locked in directly by students via their portal based on defined subtags rather than numeric CSV columns.
       </InfoBox>
 
       {/* CSV Import Card */}
@@ -185,36 +158,32 @@ export default function AdminStudents({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>
-              Import Students for Run #{activeRun?.id || "—"} (Semester {activeRun?.semester || "—"})
+              Import Students Roster
             </div>
             <div style={{ fontSize: 12, color: "#777" }}>
               Expected columns:{" "}
               <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>
-                roll_number, name, semester{activeChoices.length > 0 ? `, ${activeChoices.map((_, i) => `choice_${i + 1}`).join(", ")}` : ""}
+                roll_number, name, semester
               </code>
             </div>
           </div>
 
           <button
             onClick={() => {
-              const content = generateStudentCsvTemplate(activeRun);
-              const name = `students_run_${activeRun?.id || "template"}_sem_${activeRun?.semester || 3}.csv`;
-              downloadCsv(name, content);
+              const content = generateStudentCsvTemplate();
+              downloadCsv("students_template.csv", content);
             }}
             style={{
-              padding: "6px 14px",
-              background: "#f1efe8",
+              padding: "5px 12px",
+              background: "#fff",
               border: "1px solid #d1cfc7",
               borderRadius: 6,
               fontSize: 12,
-              fontWeight: 600,
+              fontWeight: 500,
               cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
             }}
           >
-            📥 Download Template for this Run
+            ↓ Download Template
           </button>
         </div>
 
@@ -225,24 +194,23 @@ export default function AdminStudents({
             accept=".csv"
             onChange={handleFileSelect}
             style={{ fontSize: 13 }}
-            disabled={!activeRunId}
           />
           {selectedFile && (
             <button
               onClick={handleImport}
-              disabled={uploading || !activeRunId}
+              disabled={uploading}
               style={{
                 padding: "8px 20px",
-                background: uploading || !activeRunId ? "#aaa" : "#185FA5",
+                background: uploading ? "#aaa" : "#185FA5",
                 color: "#fff",
                 border: "none",
                 borderRadius: 6,
                 fontSize: 13,
                 fontWeight: 600,
-                cursor: uploading || !activeRunId ? "not-allowed" : "pointer",
+                cursor: uploading ? "not-allowed" : "pointer",
               }}
             >
-              {uploading ? "Importing…" : "Upload to Active Run"}
+              {uploading ? "Importing…" : "Upload Student Roster"}
             </button>
           )}
         </div>
@@ -430,28 +398,53 @@ export default function AdminStudents({
               <div style={{ padding: "20px 0", textAlign: "center", color: "#888" }}>⏳ Loading preferences…</div>
             ) : (
               <div>
-                {/* Elective Choices for Run */}
+                {/* Elective Lock-In Status & Subtags */}
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontWeight: 600, fontSize: 12, color: "#555", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                    Elective Choices (Run #{activeRun?.id || "N/A"})
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, color: "#555", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      Elective Lock-In
+                    </div>
+                    {studentLockIn?.complete ? (
+                      <Badge color="green">Complete</Badge>
+                    ) : (
+                      <Badge color="amber">Incomplete</Badge>
+                    )}
                   </div>
-                  {studentChoices.length === 0 ? (
+
+                  {!studentLockIn || Object.keys(studentLockIn.locked_in || {}).length === 0 ? (
                     <div style={{ fontSize: 12, color: "#888", fontStyle: "italic" }}>
-                      No elective choices recorded for this run.
+                      No elective choices locked in yet.
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      {studentChoices.map(c => (
-                        <div key={c.choice_column} style={{ display: "flex", justifyContent: "space-between", background: "#f9f8f5", padding: "6px 10px", borderRadius: 6, fontSize: 12 }}>
-                          <span style={{ fontWeight: 500, color: "#555" }}>Choice #{c.choice_column}:</span>
+                      {Object.entries(studentLockIn.locked_in).map(([tag, subtag]) => (
+                        <div key={tag} style={{ display: "flex", justifyContent: "space-between", background: "#f9f8f5", padding: "6px 10px", borderRadius: 6, fontSize: 12 }}>
+                          <span style={{ fontWeight: 500, color: "#555" }}>{tag}:</span>
                           <span style={{ fontWeight: 600, color: "#185FA5" }}>
-                            {c.tag || `Tag #${c.numeric_value}`} (val: {c.numeric_value})
+                            {subtag}
                           </span>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
+
+                {/* Enrolled Subjects */}
+                {studentEnrolled.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, color: "#555", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+                      Active Enrolled Subjects ({studentEnrolled.length})
+                    </div>
+                    <div style={{ maxHeight: 120, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                      {studentEnrolled.map(s => (
+                        <div key={s.subject_code} style={{ display: "flex", justifyContent: "space-between", background: "#f1f5f9", padding: "4px 8px", borderRadius: 4, fontSize: 11 }}>
+                          <span style={{ fontWeight: 600, color: "#334155" }}>{s.subject_code}</span>
+                          <span style={{ color: "#64748b" }}>{s.subject_name} ({s.weekly_hours}h)</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Time Preferences Summary */}
                 <div style={{ marginBottom: 16 }}>

@@ -73,13 +73,14 @@ function SlotCell({ day, slotNum, rating, disabled, restrictionType, onClick }) 
   );
 }
 
-export default function StudentPrefs({ session }) {
+export default function StudentPrefs({ session, onNavigate, setPage }) {
   const { identity: rollNumber } = session;
 
   const [prefs, setPrefs]         = useState({});   // {slot_key: 1|2|3|4}
   const [loading, setLoading]     = useState(true);
   const [saving, setSaving]       = useState(false);
   const [error, setError]         = useState(null);
+  const [isLockInRequired, setIsLockInRequired] = useState(false);
   const [saveMsg, setSaveMsg]     = useState(null);
   const [warnings, setWarnings]   = useState([]);
 
@@ -90,12 +91,19 @@ export default function StudentPrefs({ session }) {
     setLoading(true);
      
     setError(null);
+    setIsLockInRequired(false);
     getTimePrefs(rollNumber)
       .then(data => {
         if (!cancelled) setPrefs(data.preferences || {});
       })
       .catch(e => {
-        if (!cancelled) setError(apiErrorMessage(e));
+        if (!cancelled) {
+          const msg = apiErrorMessage(e);
+          if (e.response?.status === 409 || msg.toLowerCase().includes("lock-in")) {
+            setIsLockInRequired(true);
+          }
+          setError(msg);
+        }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -195,11 +203,40 @@ export default function StudentPrefs({ session }) {
         The 15:45–17:45 slot is for labs only — theory is not scheduled there.
       </InfoBox>
 
-      {error && (
-        <div style={{ background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#791F1F", marginBottom: 12 }}>
-          ✕ {error}
-        </div>
-      )}
+      {isLockInRequired ? (
+        <Card>
+          <div style={{ textAlign: "center", padding: "30px 20px" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#111", marginBottom: 6 }}>
+              Elective Lock-In Required First
+            </div>
+            <div style={{ fontSize: 13, color: "#666", maxWidth: 520, margin: "0 auto 18px", lineHeight: 1.5 }}>
+              Department curriculum rules require you to select and confirm your elective subject track before setting timeslot preferences.
+            </div>
+            <button
+              onClick={() => (onNavigate || setPage)?.("student-lockin")}
+              style={{
+                padding: "8px 20px",
+                background: "#185FA5",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Go to Elective Lock-In →
+            </button>
+          </div>
+        </Card>
+      ) : (
+        <>
+          {error && (
+            <div style={{ background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#791F1F", marginBottom: 12 }}>
+              ✕ {error}
+            </div>
+          )}
 
       {preValidationIssues.length > 0 && (
         <div style={{ background: "#FAEEDA", border: "1px solid #FAC775", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#633806", marginBottom: 12 }}>
@@ -356,6 +393,8 @@ export default function StudentPrefs({ session }) {
           </button>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

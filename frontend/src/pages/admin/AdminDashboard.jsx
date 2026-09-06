@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { getSubjects, getStudents, getTeachers } from "../../api/catalog";
+import { initializeCycle } from "../../api/cycle";
 import { Card, PageHeader, InfoBox, MetricsRow } from "../../components/ui";
-import RunContextBanner from "../../components/RunContextBanner";
+import CycleBanner from "../../components/CycleBanner";
 
 export default function AdminDashboard({
-  runs = [],
-  activeRun,
-  setActiveRunId,
+  cycleStatus,
+  refreshCycle,
   setPage,
 }) {
   const [subjects, setSubjects] = useState([]);
@@ -29,65 +29,86 @@ export default function AdminDashboard({
     return () => { cancelled = true; };
   }, []);
 
-  const activeChoices = (activeRun?.choice_tag_configs || []).filter(c => c.is_choice_based);
-  const subjectsInRunSem = activeRun ? subjects.filter(s => s.semester === activeRun.semester) : [];
-  const studentsInRunSem = activeRun ? students.filter(s => s.semester === activeRun.semester) : [];
+  const choiceTags = cycleStatus?.tags_detail?.filter(t => t.is_choice_based) || [];
+  const currentRun = cycleStatus?.current_run;
+  const isPublished = currentRun?.status === "PUBLISHED" || currentRun?.status === "published";
+
+  const handleInitCycle = async () => {
+    try {
+      await initializeCycle();
+      if (refreshCycle) refreshCycle();
+    } catch {
+      // handled
+    }
+  };
 
   // Setup checklist items
   const steps = [
     {
-      id: "run",
-      title: "1. Select Active Generation Run",
-      done: !!activeRun,
-      desc: activeRun ? `Run #${activeRun.id} active (Semester ${activeRun.semester}, Status: ${activeRun.status})` : "No run selected. Create or select a run for your target semester.",
-      actionLabel: "Manage Runs →",
-      pageKey: "admin-runs",
-    },
-    {
       id: "subjects",
-      title: "2. Ingest Subject Catalog",
-      done: subjectsInRunSem.length > 0,
-      desc: subjectsInRunSem.length > 0 ? `${subjectsInRunSem.length} subjects found for Semester ${activeRun?.semester || "active run"}` : "Upload subject CSV with code, tags, capacity, and weekly hours.",
+      title: "1. Ingest Subject Catalog",
+      done: subjects.length > 0,
+      desc: subjects.length > 0
+        ? `${subjects.length} subjects imported across semester(s): ${cycleStatus?.active_semesters?.join(", ") || "–"}`
+        : "Upload subject CSV with code, tags, subtags, capacity, and weekly hours.",
       actionLabel: "Subject Catalog →",
       pageKey: "admin-subjects",
     },
     {
       id: "choice-tags",
-      title: "3. Configure Elective Choice Tags",
-      done: activeRun && (activeChoices.length > 0 || (activeRun.choice_tag_configs && activeRun.choice_tag_configs.length > 0)),
-      desc: activeChoices.length > 0 ? `${activeChoices.length} choice tag(s) configured (${activeChoices.map(c => c.tag).join(", ")})` : "Configure which tags represent student choice electives (e.g. PE1, MDM).",
-      actionLabel: "Configure Tags →",
-      pageKey: "admin-runs",
-    },
-    {
-      id: "students",
-      title: "4. Import Student Cohort",
-      done: studentsInRunSem.length > 0,
-      desc: studentsInRunSem.length > 0 ? `${studentsInRunSem.length} students enrolled in Semester ${activeRun?.semester || "active run"}` : "Upload student CSV with roll numbers and choice preference numbers.",
-      actionLabel: "Student Roster →",
-      pageKey: "admin-students",
+      title: "2. Configure Elective Choice Tags",
+      done: choiceTags.length > 0,
+      desc: choiceTags.length > 0
+        ? `${choiceTags.length} elective tag(s) configured (${choiceTags.map(c => c.tag).join(", ")})`
+        : "Mark which subject tags are student electives (e.g. professional_elective_1, open_elective).",
+      actionLabel: "Configure Electives →",
+      pageKey: "admin-subjects",
     },
     {
       id: "teachers",
-      title: "5. Ingest Faculty & Capabilities",
+      title: "3. Ingest Faculty & Capabilities",
       done: teachers.length > 0,
-      desc: teachers.length > 0 ? `${teachers.length} faculty members registered in department` : "Upload teacher CSV mapping teacher IDs to capable subject codes.",
+      desc: teachers.length > 0
+        ? `${teachers.length} faculty members registered in department`
+        : "Upload teacher CSV mapping teacher IDs to capable subject codes.",
       actionLabel: "Teacher Roster →",
       pageKey: "admin-teachers",
     },
     {
       id: "availability",
-      title: "6. Set Faculty Availability Constraints",
+      title: "4. Set Faculty Availability Constraints",
       done: teachers.length > 0,
       desc: "Specify blocked timeslots for faculty (hard constraints).",
       actionLabel: "Availability Matrix →",
       pageKey: "admin-availability",
     },
     {
+      id: "students",
+      title: "5. Import Student Cohorts",
+      done: students.length > 0,
+      desc: students.length > 0
+        ? `${students.length} students enrolled across active semesters`
+        : "Upload clean student roster (roll_number, name, semester).",
+      actionLabel: "Student Roster →",
+      pageKey: "admin-students",
+    },
+    {
+      id: "lock-in",
+      title: "6. Student Elective Lock-In",
+      done: (cycleStatus?.lock_in_total_students > 0) && (cycleStatus?.lock_in_complete_count === cycleStatus?.lock_in_total_students),
+      desc: cycleStatus?.lock_in_total_students > 0
+        ? `${cycleStatus.lock_in_complete_count}/${cycleStatus.lock_in_total_students} students have locked in their elective choices`
+        : "Students lock in elective subtags to unlock time and faculty preference submission.",
+      actionLabel: "Inspect Lock-Ins →",
+      pageKey: "admin-students",
+    },
+    {
       id: "solver",
-      title: "7. Generate Sections & Solve Timetable",
-      done: activeRun?.status === "PUBLISHED",
-      desc: activeRun?.status === "PUBLISHED" ? "Timetable successfully solved and published!" : "Generate section instances and execute CP-SAT solver.",
+      title: "7. Department Timetable Solver",
+      done: isPublished,
+      desc: isPublished
+        ? "Timetable successfully solved and published for all active semesters!"
+        : "Run CP-SAT solver with 3-hour subject interval splitting and teacher load balancing.",
       actionLabel: "Open Solver →",
       pageKey: "admin-solver",
     },
@@ -102,23 +123,22 @@ export default function AdminDashboard({
         sub="Department-level academic timetable generation management."
       />
 
-      <RunContextBanner
-        activeRun={activeRun}
-        runs={runs}
-        onSelectRun={setActiveRunId}
-        onGoToRuns={() => setPage && setPage("admin-runs")}
+      <CycleBanner
+        cycleStatus={cycleStatus}
+        onInitializeCycle={handleInitCycle}
+        onNavigate={setPage}
       />
 
       <InfoBox title="Department-Scoped Timetable System">
-        This system manages semester-wise timetable scheduling for a single department.
-        Data flows from uploaded CSVs through choice-based tag configuration and student/teacher preferences,
-        into the CP-SAT solver which generates section assignments and balances teacher loads.
+        This system manages timetable scheduling for a single department across all active semesters together.
+        Data flows from uploaded catalogs through elective subtag lock-in and student/teacher preferences into the CP-SAT solver.
+        3-hour subjects are accurately scheduled as one 2-hour meeting and one 1-hour remainder with interval clash checking.
       </InfoBox>
 
       {/* Overview Metrics */}
       <MetricsRow
         items={[
-          { val: runs.length, label: "Total Runs", tip: "Total number of generation runs created." },
+          { val: cycleStatus?.active_semesters?.length ?? 0, label: "Active Semesters", tip: "Semesters with active subjects in department catalog." },
           { val: subjects.length, label: "Total Subjects", tip: "Subjects in department catalog." },
           { val: students.length, label: "Enrolled Students", tip: "Students across all semesters." },
           { val: teachers.length, label: "Faculty Members", tip: "Teachers in department roster." },

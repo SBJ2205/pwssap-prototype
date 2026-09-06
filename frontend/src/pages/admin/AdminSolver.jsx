@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { generateSections, runSolve, getSections } from "../../api/runs";
 import { getSubjects, getStudents, getTeachers } from "../../api/catalog";
+import { initializeCycle } from "../../api/cycle";
 import { apiErrorMessage } from "../../api/client";
 import { Card, PageHeader, InfoBox, MetricsRow } from "../../components/ui";
-import RunContextBanner from "../../components/RunContextBanner";
+import CycleBanner from "../../components/CycleBanner";
 
 export default function AdminSolver({
-  runs = [],
-  activeRun,
-  activeRunId,
-  setActiveRunId,
+  cycleStatus,
+  refreshCycle,
   setPage,
-  refreshRuns,
 }) {
+  const currentRun = cycleStatus?.current_run;
+  const currentRunId = currentRun?.id;
+
   // Preflight data counts
   const [subjectsCount, setSubjectsCount] = useState(0);
   const [studentsCount, setStudentsCount] = useState(0);
@@ -36,44 +37,69 @@ export default function AdminSolver({
   const [solveError, setSolveError] = useState(null);
 
   const checkPreflight = useCallback(async () => {
-    if (!activeRun) return;
     setPreflightLoading(true);
     try {
-      const [subs, stus, teas, secs] = await Promise.all([
-        getSubjects(activeRun.semester).catch(() => []),
-        getStudents(activeRun.semester).catch(() => []),
+      const [subs, stus, teas] = await Promise.all([
+        getSubjects().catch(() => []),
+        getStudents().catch(() => []),
         getTeachers().catch(() => []),
-        getSections(activeRun.id).catch(() => ({ count: 0 })),
       ]);
       setSubjectsCount(subs.length);
       setStudentsCount(stus.length);
       setTeachersCount(teas.length);
-      setSectionsCount(secs.count || 0);
+
+      if (currentRunId) {
+        const secs = await getSections(currentRunId).catch(() => ({ count: 0 }));
+        setSectionsCount(secs.count || 0);
+      } else {
+        setSectionsCount(0);
+      }
     } finally {
       setPreflightLoading(false);
     }
-  }, [activeRun]);
+  }, [currentRunId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     checkPreflight();
   }, [checkPreflight]);
 
+  async function handleInitCycle() {
+    try {
+      await initializeCycle();
+      if (refreshCycle) await refreshCycle();
+      checkPreflight();
+    } catch (err) {
+      setGenError(apiErrorMessage(err));
+    }
+  }
+
   async function handleGenerateSections() {
-    if (!activeRunId) return;
+    let runIdToUse = currentRunId;
+    if (!runIdToUse) {
+      try {
+        const res = await initializeCycle();
+        runIdToUse = res.current_run?.id;
+        if (refreshCycle) refreshCycle();
+      } catch (err) {
+        setGenError(apiErrorMessage(err));
+        return;
+      }
+    }
+
     setGenerating(true);
     setGenError(null);
     setGenSuccess(null);
     setGenWarnings([]);
 
     try {
-      const res = await generateSections(activeRunId);
+      const res = await generateSections(runIdToUse);
       setGenSuccess(
-        `Generated ${res.generated_count} section instance(s) for Run #${res.run_id}! (Cleared ${res.cleared_count} previous sections).`
+        `Generated ${res.generated_count} section instance(s) across active semesters! (Cleared ${res.cleared_count} previous sections).`
       );
       setGenWarnings(res.warnings || []);
       setSectionsCount(res.generated_count);
-      if (refreshRuns) refreshRuns();
+      if (refreshCycle) refreshCycle();
     } catch (err) {
       setGenError(apiErrorMessage(err));
     } finally {
@@ -82,7 +108,12 @@ export default function AdminSolver({
   }
 
   async function handleRunSolver() {
-    if (!activeRunId) return;
+    let runIdToUse = currentRunId;
+    if (!runIdToUse) {
+      setSolveError("No cycle run initialized. Click 'Generate Sections' first.");
+      return;
+    }
+
     setSolving(true);
     setProgress(15);
     setSolveError(null);
@@ -94,11 +125,11 @@ export default function AdminSolver({
     }, 200);
 
     try {
-      const res = await runSolve(activeRunId);
+      const res = await runSolve(runIdToUse);
       clearInterval(timer);
       setProgress(100);
       setSolveResult(res);
-      if (refreshRuns) refreshRuns();
+      if (refreshCycle) refreshCycle();
     } catch (err) {
       clearInterval(timer);
       setSolveError(apiErrorMessage(err));
@@ -107,31 +138,30 @@ export default function AdminSolver({
     }
   }
 
-  const isReady = activeRun && subjectsCount > 0 && studentsCount > 0 && teachersCount > 0;
+  const isReady = subjectsCount > 0 && studentsCount > 0 && teachersCount > 0;
 
   return (
     <div>
       <PageHeader
-        title="Timetable Solver & Optimization"
-        sub="Configure and execute the Google OR-Tools CP-SAT constraint optimization engine."
+        title="Department Timetable Solver"
+        sub="Configure and execute the Google OR-Tools CP-SAT constraint optimization engine for all active semesters."
       />
 
-      <RunContextBanner
-        activeRun={activeRun}
-        runs={runs}
-        onSelectRun={setActiveRunId}
-        onGoToRuns={() => setPage && setPage("admin-runs")}
+      <CycleBanner
+        cycleStatus={cycleStatus}
+        onInitializeCycle={handleInitCycle}
+        onNavigate={setPage}
       />
 
-      <InfoBox title="CP-SAT Solver Priorities">
-        The solver executes a multi-level optimization for the active semester:
+      <InfoBox title="CP-SAT Department Optimization Priorities">
+        The solver executes a unified department-wide optimization across all active semesters:
         <ol style={{ margin: "6px 0 0", paddingLeft: 20 }}>
-          <li><strong>Hard Constraints:</strong> Section capacity ceilings, no double-booking, and strict teacher availability blocks.</li>
+          <li><strong>Hard Constraints:</strong> Section capacities, teacher availability, cross-semester teacher no-clash, student no-clash.</li>
+          <li><strong>3-Hour Subjects:</strong> Accurately represented as 1 linked 2-hour meeting + 1 linked 1-hour remainder occupying a sub-slot interval (09:00–10:00 or 10:00–11:00) with physical slot compatibility.</li>
           <li><strong>Student Time Preferences:</strong> Maximizes student schedule satisfaction across preferred timeslots.</li>
-          <li><strong>Faculty Preferences:</strong> Secondary tie-breaker when multiple teachers are equally viable.</li>
-          <li><strong>Teacher Load Balance:</strong> Balances teaching hours evenly across qualified faculty.</li>
+          <li><strong>Faculty Preferences:</strong> Secondary tie-breaker for eligible faculty.</li>
+          <li><strong>Teacher Load Balance:</strong> Minimizes teaching load spread across faculty.</li>
         </ol>
-        Successful solutions are <strong>automatically published</strong> upon completion.
       </InfoBox>
 
       {/* Preflight Checklist Card */}
@@ -140,7 +170,7 @@ export default function AdminSolver({
           <div>
             <div style={{ fontWeight: 700, fontSize: 14 }}>Solver Preflight Readiness</div>
             <div style={{ fontSize: 12, color: "#777" }}>
-              Verifies whether required catalog data and cohort enrollments are present for Run #{activeRun?.id || "—"}.
+              Verifies whether catalog data, student cohorts, and faculty availability are ready for solving.
             </div>
           </div>
           <button
@@ -239,16 +269,16 @@ export default function AdminSolver({
           </div>
           <button
             onClick={handleGenerateSections}
-            disabled={generating || !activeRunId || subjectsCount === 0}
+            disabled={generating || subjectsCount === 0}
             style={{
               padding: "7px 16px",
-              background: generating || !activeRunId ? "#aaa" : "#185FA5",
+              background: generating || subjectsCount === 0 ? "#aaa" : "#185FA5",
               color: "#fff",
               border: "none",
               borderRadius: 6,
               fontSize: 12,
               fontWeight: 600,
-              cursor: generating || !activeRunId ? "not-allowed" : "pointer",
+              cursor: generating || subjectsCount === 0 ? "not-allowed" : "pointer",
             }}
           >
             {generating ? "Generating…" : "Generate Sections"}
@@ -283,7 +313,7 @@ export default function AdminSolver({
           Execute CP-SAT Solver
         </div>
         <div style={{ fontSize: 12, color: "#777", marginBottom: 14 }}>
-          Runs the solver for Run #{activeRun?.id} (Semester {activeRun?.semester}). If sections have not been generated yet, they will be generated automatically.
+          Runs the CP-SAT optimization engine for the department cycle (Run #{currentRunId || "—"}).
         </div>
 
         {/* Solver Configuration */}
@@ -315,7 +345,7 @@ export default function AdminSolver({
         <div style={{ marginBottom: 16 }}>
           <button
             onClick={handleRunSolver}
-            disabled={solving || !activeRunId || !isReady}
+            disabled={solving || !isReady}
             style={{
               padding: "10px 28px",
               background: solving || !isReady ? "#aaa" : "#1D9E75",

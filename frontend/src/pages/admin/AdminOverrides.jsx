@@ -4,14 +4,14 @@ import { getTeachers, getStudents, getSubjectTeachers } from "../../api/catalog"
 import { enrollStudent, unenrollStudent, reassignTeacher, overrideCapacity } from "../../api/overrides";
 import { apiErrorMessage } from "../../api/client";
 import { Card, PageHeader, Badge, InfoBox } from "../../components/ui";
-import RunContextBanner from "../../components/RunContextBanner";
+import CycleBanner from "../../components/CycleBanner";
 
 export default function AdminOverrides({
   runs = [],
-  activeRun,
   activeRunId,
-  setActiveRunId,
   setPage,
+  cycleStatus,
+  refreshCycle,
 }) {
   const [summary, setSummary] = useState(null);
   const [teachers, setTeachers] = useState([]);
@@ -40,8 +40,10 @@ export default function AdminOverrides({
   // Audit log of session overrides
   const [overrideLogs, setOverrideLogs] = useState([]);
 
+  const effectiveRunId = cycleStatus?.current_run?.id || activeRunId || (runs.length > 0 ? runs[runs.length - 1].id : null);
+
   const loadData = useCallback(async () => {
-    if (!activeRunId) {
+    if (!effectiveRunId) {
       setSummary(null);
       setLoading(false);
       return;
@@ -50,9 +52,9 @@ export default function AdminOverrides({
     setError(null);
     try {
       const [sum, tData, sData] = await Promise.all([
-        getRunSummary(activeRunId).catch(() => null),
+        getRunSummary(effectiveRunId).catch(() => null),
         getTeachers().catch(() => []),
-        getStudents(activeRun?.semester).catch(() => []),
+        getStudents().catch(() => []),
       ]);
       setSummary(sum);
       setTeachers(tData || []);
@@ -65,7 +67,7 @@ export default function AdminOverrides({
     } finally {
       setLoading(false);
     }
-  }, [activeRunId, activeRun, selectedSectionId]);
+  }, [effectiveRunId, selectedSectionId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -242,18 +244,18 @@ export default function AdminOverrides({
         sub="Make surgical manual adjustments to published sections without invalidating the solver timetable."
       />
 
-      <RunContextBanner
-        activeRun={activeRun}
-        runs={runs}
-        onSelectRun={setActiveRunId}
-        onGoToRuns={() => setPage && setPage("admin-runs")}
+      <CycleBanner
+        cycleStatus={cycleStatus}
+        onInitializeCycle={refreshCycle}
+        onNavigate={setPage}
       />
 
       <InfoBox title="Admin Override Policy">
-        Post-publication overrides are designed for practical department administration:
+        Post-publication overrides allow surgical schedule management in the current department cycle:
         <ul style={{ margin: "6px 0 0", paddingLeft: 20 }}>
-          <li><strong>Non-blocking warnings:</strong> You can enroll students into full sections or reassign teachers outside their standard capability list. The system issues a non-blocking warning and honors your override.</li>
-          <li><strong>Immediate consistency:</strong> Timetables for enrolled students and assigned teachers update automatically.</li>
+          <li><strong>Teacher Validation:</strong> Teacher reassignments are strictly verified against subject qualification and timeslot availability (reassigning an ineligible or unavailable teacher is rejected).</li>
+          <li><strong>Student Enrollment:</strong> Enroll or unenroll students directly. Full capacity warnings are reported as non-blocking notifications.</li>
+          <li><strong>Live Synchronization:</strong> Personal student and faculty timetables reflect overrides immediately without re-solving.</li>
         </ul>
       </InfoBox>
 
@@ -386,8 +388,15 @@ export default function AdminOverrides({
                     <span style={{ fontWeight: 600, color: "#555" }}>Scheduled Meetings:</span>
                     {selectedSection.meetings && selectedSection.meetings.length > 0 ? (
                       selectedSection.meetings.map((m, i) => (
-                        <span key={i} style={{ background: "#E6F1FB", border: "1px solid #B5D4F4", padding: "2px 6px", borderRadius: 4, color: "#0C447C", fontWeight: 600 }}>
-                          {m.day} {m.start_time}–{m.end_time} ({m.slot_key})
+                        <span key={i} style={{
+                          background: m.duration_hours === 1 ? "#F0F9FF" : "#E6F1FB",
+                          border: m.duration_hours === 1 ? "1px solid #7DD3FC" : "1px solid #B5D4F4",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          color: m.duration_hours === 1 ? "#0369A1" : "#0C447C",
+                          fontWeight: 600
+                        }}>
+                          {m.day} {m.start_time}–{m.end_time} ({m.duration_hours || 2}h)
                         </span>
                       ))
                     ) : (
@@ -403,7 +412,7 @@ export default function AdminOverrides({
                   )}
                   {actionWarnings.length > 0 && (
                     <div style={{ background: "#FAEEDA", border: "1px solid #FAC775", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#633806", marginBottom: 10 }}>
-                      <strong>⚠ Non-blocking Warning (Override Accepted):</strong>
+                      <strong>⚠ Non-blocking Warning:</strong>
                       <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                         {actionWarnings.map((w, idx) => (
                           <li key={idx}>{w}</li>
@@ -447,7 +456,7 @@ export default function AdminOverrides({
                             const isCapable = capableTeachers.includes(t.teacher_id);
                             return (
                               <option key={t.teacher_id} value={t.teacher_id}>
-                                {t.teacher_name} ({t.teacher_id}){isCapable ? " [Qualified]" : " [Not in capability list]"}
+                                {t.teacher_name} ({t.teacher_id}){isCapable ? " [Qualified]" : " [Not Qualified - Will Reject]"}
                               </option>
                             );
                           })}

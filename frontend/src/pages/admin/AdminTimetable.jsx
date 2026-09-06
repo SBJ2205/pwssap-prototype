@@ -3,14 +3,14 @@ import { getRunSummary } from "../../api/runs";
 import { apiErrorMessage } from "../../api/client";
 import { DAYS, SLOT_NUMBERS, SLOT_LABELS, SLOT_SHORT, td } from "../../constants";
 import { Card, PageHeader, Badge, MetricsRow } from "../../components/ui";
-import RunContextBanner from "../../components/RunContextBanner";
+import CycleBanner from "../../components/CycleBanner";
 
 export default function AdminTimetable({
   runs = [],
-  activeRun,
   activeRunId,
-  setActiveRunId,
   setPage,
+  cycleStatus,
+  refreshCycle,
 }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -19,15 +19,18 @@ export default function AdminTimetable({
   // Tab view: "grid", "sections", "workload"
   const [viewTab, setViewTab] = useState("grid");
 
-  // Filters for sections tab
+  // Filters for sections & grid tab
+  const [selectedSemester, setSelectedSemester] = useState("all");
   const [sectionSearch, setSectionSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
 
   // Roster modal
   const [activeRosterSection, setActiveRosterSection] = useState(null);
 
+  const effectiveRunId = cycleStatus?.current_run?.id || activeRunId || (runs.length > 0 ? runs[runs.length - 1].id : null);
+
   const loadSummary = useCallback(async () => {
-    if (!activeRunId) {
+    if (!effectiveRunId) {
       setSummary(null);
       setLoading(false);
       return;
@@ -35,7 +38,7 @@ export default function AdminTimetable({
     setLoading(true);
     setError(null);
     try {
-      const data = await getRunSummary(activeRunId);
+      const data = await getRunSummary(effectiveRunId);
       setSummary(data);
     } catch (err) {
       setError(apiErrorMessage(err));
@@ -43,12 +46,18 @@ export default function AdminTimetable({
     } finally {
       setLoading(false);
     }
-  }, [activeRunId]);
+  }, [effectiveRunId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadSummary();
   }, [loadSummary]);
+
+  const activeSemesters = useMemo(() => {
+    if (summary?.semesters && summary.semesters.length > 0) return summary.semesters;
+    if (summary?.semester) return [summary.semester];
+    return [];
+  }, [summary]);
 
   const sections = useMemo(() => summary?.sections || [], [summary]);
   const weeklyGrid = useMemo(() => summary?.weekly_grid || {}, [summary]);
@@ -60,17 +69,19 @@ export default function AdminTimetable({
       const dayEntries = weeklyGrid[d] || [];
       for (const entry of dayEntries) {
         if (!entry.slot_key) continue;
+        if (selectedSemester !== "all" && entry.semester && entry.semester !== Number(selectedSemester)) continue;
         if (!map[entry.slot_key]) map[entry.slot_key] = [];
         map[entry.slot_key].push(entry);
       }
     }
     return map;
-  }, [weeklyGrid]);
+  }, [weeklyGrid, selectedSemester]);
 
   // Compute teacher workload breakdown
   const teacherWorkload = useMemo(() => {
     const map = {};
     for (const sec of sections) {
+      if (selectedSemester !== "all" && sec.semester && sec.semester !== Number(selectedSemester)) continue;
       const tid = sec.teacher_id || "UNASSIGNED";
       const tname = sec.teacher_name || (sec.teacher_id ? `Teacher ${sec.teacher_id}` : "Unassigned");
       if (!map[tid]) {
@@ -79,18 +90,23 @@ export default function AdminTimetable({
           teacher_name: tname,
           sectionsCount: 0,
           totalSlots: 0,
+          totalHours: 0,
           subjects: new Set(),
         };
       }
       map[tid].sectionsCount += 1;
       map[tid].totalSlots += (sec.meetings || []).length;
+      for (const m of (sec.meetings || [])) {
+        map[tid].totalHours += (m.duration_hours || 2);
+      }
       map[tid].subjects.add(sec.subject_code);
     }
-    return Object.values(map).sort((a, b) => b.totalSlots - a.totalSlots);
-  }, [sections]);
+    return Object.values(map).sort((a, b) => b.totalHours - a.totalHours);
+  }, [sections, selectedSemester]);
 
   const filteredSections = useMemo(() => {
     return sections.filter(s => {
+      if (selectedSemester !== "all" && s.semester && s.semester !== Number(selectedSemester)) return false;
       if (typeFilter !== "all" && s.subject_type !== typeFilter) return false;
       if (sectionSearch.trim()) {
         const q = sectionSearch.toLowerCase();
@@ -104,9 +120,9 @@ export default function AdminTimetable({
       }
       return true;
     });
-  }, [sections, sectionSearch, typeFilter]);
+  }, [sections, sectionSearch, typeFilter, selectedSemester]);
 
-  const totalEnrollments = sections.reduce((sum, s) => sum + (s.enrolled_count || 0), 0);
+  const totalEnrollments = filteredSections.reduce((sum, s) => sum + (s.enrolled_count || 0), 0);
   const totalSlotsScheduled = Object.values(slotGrid).reduce((sum, arr) => sum + arr.length, 0);
 
   return (
@@ -116,11 +132,10 @@ export default function AdminTimetable({
         sub="Full semester timetable review, section roster membership, and teacher workload balance."
       />
 
-      <RunContextBanner
-        activeRun={activeRun}
-        runs={runs}
-        onSelectRun={setActiveRunId}
-        onGoToRuns={() => setPage && setPage("admin-runs")}
+      <CycleBanner
+        cycleStatus={cycleStatus}
+        onInitializeCycle={refreshCycle}
+        onNavigate={setPage}
       />
 
       {loading ? (
@@ -129,10 +144,10 @@ export default function AdminTimetable({
         <Card>
           <div style={{ textAlign: "center", padding: "30px 0" }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#333", marginBottom: 6 }}>
-              No Published Timetable for this Run
+              No Published Timetable
             </div>
             <div style={{ fontSize: 13, color: "#777", marginBottom: 16 }}>
-              {error || "Run the solver to optimize and auto-publish the timetable."}
+              {error || "Run the solver to optimize and auto-publish the department timetable."}
             </div>
             {setPage && (
               <button
@@ -155,12 +170,52 @@ export default function AdminTimetable({
         </Card>
       ) : (
         <>
+          {/* Semester Selector Filter if multiple active semesters */}
+          {activeSemesters.length > 1 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, background: "#fff", padding: "8px 14px", borderRadius: 8, border: "1px solid #e0ddd8" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#555" }}>Semester View:</span>
+              <button
+                onClick={() => setSelectedSemester("all")}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #ccc",
+                  background: selectedSemester === "all" ? "#185FA5" : "#fff",
+                  color: selectedSemester === "all" ? "#fff" : "#333",
+                  fontSize: 12,
+                  fontWeight: selectedSemester === "all" ? 700 : 500,
+                  cursor: "pointer",
+                }}
+              >
+                All Semesters ({activeSemesters.join(", ")})
+              </button>
+              {activeSemesters.map(sem => (
+                <button
+                  key={sem}
+                  onClick={() => setSelectedSemester(String(sem))}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                    border: "1px solid #ccc",
+                    background: selectedSemester === String(sem) ? "#185FA5" : "#fff",
+                    color: selectedSemester === String(sem) ? "#fff" : "#333",
+                    fontSize: 12,
+                    fontWeight: selectedSemester === String(sem) ? 700 : 500,
+                    cursor: "pointer",
+                  }}
+                >
+                  Semester {sem}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Metrics */}
           <MetricsRow
             items={[
-              { val: summary.section_count, label: "Total Sections", tip: "Count of all scheduled class sections." },
+              { val: filteredSections.length, label: "Total Sections", tip: "Count of class sections in current view." },
               { val: totalSlotsScheduled, label: "Scheduled Meetings", tip: "Sum of weekly meeting occurrences across all days." },
-              { val: totalEnrollments, label: "Student Seats Filled", tip: "Sum of enrolled students across all sections." },
+              { val: totalEnrollments, label: "Student Seats Filled", tip: "Sum of enrolled students across viewed sections." },
               { val: teacherWorkload.filter(t => t.teacher_id !== "UNASSIGNED").length, label: "Teaching Faculty", tip: "Faculty members assigned to at least one section." },
             ]}
           />
@@ -169,7 +224,7 @@ export default function AdminTimetable({
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             {[
               { key: "grid", label: "📅 Weekly Matrix View" },
-              { key: "sections", label: `📋 Section List (${sections.length})` },
+              { key: "sections", label: `📋 Section List (${filteredSections.length})` },
               { key: "workload", label: `👨‍🏫 Teacher Workload (${teacherWorkload.length})` },
             ].map(tab => (
               <button
@@ -198,16 +253,21 @@ export default function AdminTimetable({
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 14 }}>
-                    Semester {summary.semester} Weekly Schedule Matrix
+                    {selectedSemester === "all"
+                      ? `Department Schedule Matrix (Semesters: ${activeSemesters.join(", ")})`
+                      : `Semester ${selectedSemester} Weekly Schedule Matrix`}
                   </div>
                   <div style={{ fontSize: 12, color: "#777" }}>
-                    Showing all section meetings scheduled by the CP-SAT engine.
+                    Showing section meetings scheduled by CP-SAT solver. 3-hour subjects show exact 2h and 1h intervals.
                   </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 10, fontSize: 11 }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ width: 10, height: 10, background: "#E6F1FB", border: "1px solid #B5D4F4", borderRadius: 2 }} /> Theory
+                    <span style={{ width: 10, height: 10, background: "#E6F1FB", border: "1px solid #B5D4F4", borderRadius: 2 }} /> Theory (2h)
+                  </span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ width: 10, height: 10, background: "#F0F9FF", border: "1px solid #7DD3FC", borderRadius: 2 }} /> Remainder (1h)
                   </span>
                   <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
                     <span style={{ width: 10, height: 10, background: "#EEEDFB", border: "1px solid #C4C0F0", borderRadius: 2 }} /> Lab
@@ -275,7 +335,7 @@ export default function AdminTimetable({
                           display: "flex",
                           flexDirection: "column",
                           gap: 4,
-                          maxHeight: 140,
+                          maxHeight: 160,
                           overflowY: "auto",
                         }}
                       >
@@ -287,22 +347,27 @@ export default function AdminTimetable({
 
                         {entries.map((entry, idx) => {
                           const isLab = entry.subject_code?.toLowerCase().includes("lab") || false;
+                          const isOneHour = entry.duration_hours === 1;
                           return (
                             <div
                               key={idx}
                               style={{
-                                background: isLab ? "#EEEDFB" : "#E6F1FB",
-                                border: isLab ? "1px solid #C4C0F0" : "1px solid #B5D4F4",
+                                background: isLab ? "#EEEDFB" : isOneHour ? "#F0F9FF" : "#E6F1FB",
+                                border: isLab ? "1px solid #C4C0F0" : isOneHour ? "1px solid #7DD3FC" : "1px solid #B5D4F4",
                                 borderRadius: 6,
                                 padding: "4px 6px",
                                 fontSize: 10,
                               }}
                             >
-                              <div style={{ fontWeight: 700, color: isLab ? "#453EA6" : "#0C447C", display: "flex", justifyContent: "space-between" }}>
+                              <div style={{ fontWeight: 700, color: isLab ? "#453EA6" : "#0C447C", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                 <span>{entry.subject_code} ({entry.section_label})</span>
-                                <span>{entry.enrolled_count} stus</span>
+                                <span style={{ fontSize: 9, opacity: 0.85 }}>{entry.enrolled_count} stus</span>
                               </div>
-                              <div style={{ color: "#444", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: isOneHour ? "#0369A1" : "#555", marginTop: 2, fontWeight: isOneHour ? 600 : 400 }}>
+                                <span>⏰ {entry.start_time}–{entry.end_time}</span>
+                                {isOneHour && <span style={{ background: "#BAE6FD", color: "#0369A1", padding: "0 4px", borderRadius: 3, fontSize: 8 }}>1h Remainder</span>}
+                              </div>
+                              <div style={{ color: "#444", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                 👤 {entry.teacher_name || "Unassigned"}
                               </div>
                             </div>
@@ -385,15 +450,16 @@ export default function AdminTimetable({
                                 <span
                                   key={i}
                                   style={{
-                                    background: "#F4F8FC",
-                                    border: "1px solid #B5D4F4",
+                                    background: m.duration_hours === 1 ? "#F0F9FF" : "#F4F8FC",
+                                    border: m.duration_hours === 1 ? "1px solid #7DD3FC" : "1px solid #B5D4F4",
                                     borderRadius: 4,
                                     padding: "2px 6px",
                                     fontSize: 11,
-                                    color: "#0C447C",
+                                    color: m.duration_hours === 1 ? "#0369A1" : "#0C447C",
+                                    fontWeight: m.duration_hours === 1 ? 600 : 400,
                                   }}
                                 >
-                                  {m.day} {m.start_time}–{m.end_time}
+                                  {m.day} {m.start_time}–{m.end_time} ({m.duration_hours || 2}h)
                                 </span>
                               ))}
                             </div>
@@ -466,13 +532,13 @@ export default function AdminTimetable({
                       </td>
                       <td style={{ ...td, textAlign: "center" }}>
                         <span style={{
-                          background: t.totalSlots >= 8 ? "#FAEEDA" : "#EAF3DE",
-                          color: t.totalSlots >= 8 ? "#633806" : "#27500A",
+                          background: t.totalHours >= 14 ? "#FAEEDA" : "#EAF3DE",
+                          color: t.totalHours >= 14 ? "#633806" : "#27500A",
                           padding: "2px 8px",
                           borderRadius: 10,
                           fontWeight: 700,
                         }}>
-                          {t.totalSlots * 2} hrs ({t.totalSlots} slots)
+                          {t.totalHours} hrs ({t.totalSlots} meetings)
                         </span>
                       </td>
                       <td style={td}>
