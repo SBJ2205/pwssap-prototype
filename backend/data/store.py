@@ -54,10 +54,10 @@ class InMemoryStore:
         self.student_faculty_preferences: Dict[str, Dict[str, Dict[str, int]]] = {}
 
         self.sections: Dict[int, Section] = {}
-        self._next_section_id: int = 0
+        self._next_section_id: int = 1
 
         self.runs: Dict[int, GenerationRun] = {}
-        self._next_run_id: int = 0
+        self._next_run_id: int = 1
 
         # Cycle-level elective configuration: tag -> is_choice_based bool.
         self.cycle_choice_configs: Dict[str, bool] = {}

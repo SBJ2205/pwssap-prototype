@@ -100,13 +100,20 @@ export default function App() {
   const [cycleStatus, setCycleStatus] = useState(null);
   const [activeRunIdState, setActiveRunIdState] = useState(() => {
     const saved = localStorage.getItem("pwssap_active_run_id");
-    return saved ? parseInt(saved, 10) : null;
+    if (!saved || saved === "undefined" || saved === "null") return null;
+    const parsed = parseInt(saved, 10);
+    return isNaN(parsed) ? null : parsed;
   });
 
   const setActiveRunId = useCallback((id) => {
-    setActiveRunIdState(id);
-    if (id != null) localStorage.setItem("pwssap_active_run_id", String(id));
-    else localStorage.removeItem("pwssap_active_run_id");
+    if (id != null && !isNaN(Number(id))) {
+      const num = Number(id);
+      setActiveRunIdState(num);
+      localStorage.setItem("pwssap_active_run_id", String(num));
+    } else {
+      setActiveRunIdState(null);
+      localStorage.removeItem("pwssap_active_run_id");
+    }
   }, []);
 
   const refreshRuns = useCallback(async () => {

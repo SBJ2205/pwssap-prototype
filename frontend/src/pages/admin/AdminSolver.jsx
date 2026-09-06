@@ -15,7 +15,7 @@ export default function AdminSolver({
 }) {
   const [internalRunId, setInternalRunId] = useState(null);
   const currentRun = cycleStatus?.current_run;
-  const currentRunId = internalRunId || currentRun?.id || activeRunId;
+  const currentRunId = internalRunId != null ? internalRunId : (currentRun?.id != null ? currentRun.id : activeRunId);
 
   // Preflight data counts
   const [subjectsCount, setSubjectsCount] = useState(0);
@@ -51,10 +51,10 @@ export default function AdminSolver({
       setStudentsCount(stus.length);
       setTeachersCount(teas.length);
 
-      const runId = internalRunId || currentRunId;
-      if (runId) {
-        const secs = await getSections(runId).catch(() => ({ count: 0 }));
-        setSectionsCount(secs.count || 0);
+      const runId = internalRunId != null ? internalRunId : currentRunId;
+      if (runId != null && !isNaN(Number(runId))) {
+        const secs = await getSections(Number(runId)).catch(() => ({ count: 0 }));
+        setSectionsCount(secs?.count || (Array.isArray(secs?.sections) ? secs.sections.length : 0));
       } else {
         setSectionsCount(0);
       }
@@ -71,10 +71,11 @@ export default function AdminSolver({
   async function handleInitCycle() {
     try {
       const res = await initializeCycle();
-      const rid = res?.run_id || res?.current_run?.id;
-      if (rid) {
-        setInternalRunId(rid);
-        if (setActiveRunId) setActiveRunId(rid);
+      const rid = res?.run_id ?? res?.current_run?.id;
+      if (rid != null && !isNaN(Number(rid))) {
+        const numId = Number(rid);
+        setInternalRunId(numId);
+        if (setActiveRunId) setActiveRunId(numId);
       }
       if (refreshCycle) await refreshCycle();
       checkPreflight();
@@ -84,12 +85,13 @@ export default function AdminSolver({
   }
 
   async function handleGenerateSections() {
-    let runIdToUse = internalRunId || currentRunId || activeRunId;
-    if (!runIdToUse) {
+    let runIdToUse = internalRunId != null ? internalRunId : (currentRunId != null ? currentRunId : activeRunId);
+    if (runIdToUse == null || isNaN(Number(runIdToUse))) {
       try {
         const res = await initializeCycle();
-        runIdToUse = res?.run_id || res?.current_run?.id;
-        if (runIdToUse) {
+        const newId = res?.run_id ?? res?.current_run?.id;
+        if (newId != null && !isNaN(Number(newId))) {
+          runIdToUse = Number(newId);
           setInternalRunId(runIdToUse);
           if (setActiveRunId) setActiveRunId(runIdToUse);
         }
@@ -100,7 +102,7 @@ export default function AdminSolver({
       }
     }
 
-    if (!runIdToUse || isNaN(Number(runIdToUse))) {
+    if (runIdToUse == null || isNaN(Number(runIdToUse))) {
       setGenError("Unable to initialize or find a valid department scheduling cycle. Please ensure subjects are uploaded.");
       return;
     }
@@ -111,7 +113,7 @@ export default function AdminSolver({
     setGenWarnings([]);
 
     try {
-      const res = await generateSections(runIdToUse);
+      const res = await generateSections(Number(runIdToUse));
       setGenSuccess(
         `Generated ${res.generated_count} section instance(s) across active semesters! (Cleared ${res.cleared_count} previous sections).`
       );
@@ -126,8 +128,8 @@ export default function AdminSolver({
   }
 
   async function handleRunSolver() {
-    let runIdToUse = internalRunId || currentRunId || activeRunId;
-    if (!runIdToUse || isNaN(Number(runIdToUse))) {
+    let runIdToUse = internalRunId != null ? internalRunId : (currentRunId != null ? currentRunId : activeRunId);
+    if (runIdToUse == null || isNaN(Number(runIdToUse))) {
       setSolveError("No cycle run initialized. Click 'Generate Sections' first.");
       return;
     }
