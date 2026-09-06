@@ -59,6 +59,9 @@ class InMemoryStore:
         self.runs: Dict[int, GenerationRun] = {}
         self._next_run_id: int = 0
 
+        # Cycle-level elective configuration: tag -> is_choice_based bool.
+        self.cycle_choice_configs: Dict[str, bool] = {}
+
         # roll_number -> {subject_code -> section_id}.
         # Populated by solver/service.py after solving; refined by Phase 10
         # admin override endpoints (enroll_student / unenroll_student).
@@ -99,6 +102,24 @@ class InMemoryStore:
         scoped to one semester. Used by the admin choice-tag configuration
         UI (product decision #3) to show which tags exist to choose from."""
         return sorted({s.subject_tag for s in self.list_subjects(semester)})
+
+    def get_choice_groups(self, semester: Optional[int] = None) -> Dict[str, List[str]]:
+        """Returns {tag: [subtag1, subtag2, ...]} for tags in the catalog that define subtags."""
+        result: Dict[str, set] = {}
+        for s in self.list_subjects(semester):
+            if s.subtag:
+                result.setdefault(s.subject_tag, set()).add(s.subtag)
+        return {tag: sorted(list(subtags)) for tag, subtags in sorted(result.items())}
+
+    # ── Cycle Choice Configs (department-level) ───────────────────────────
+    def set_cycle_choice_configs(self, configs: Dict[str, bool]) -> None:
+        self.cycle_choice_configs = dict(configs)
+
+    def get_cycle_choice_configs(self) -> Dict[str, bool]:
+        return dict(self.cycle_choice_configs)
+
+    def get_choice_based_tags(self) -> set:
+        return {tag for tag, is_cb in self.cycle_choice_configs.items() if is_cb}
 
     # ── Teachers ───────────────────────────────────────────────────────────
     def list_teachers(self) -> List[Teacher]:
@@ -186,14 +207,65 @@ class InMemoryStore:
             code: dict(ratings) for code, ratings in preferences.items()
         }
 
-    # ── Student choice selections (per-run) ─────────────────────────────────
+    # ── Student choice selections & lock-in ─────────────────────────────────
     def set_student_choice_selections(
         self, roll_number: str, selections: List[StudentChoiceSelection]
     ) -> None:
-        self.student_choice_selections[roll_number] = selections
+        self.student_choice_selections[roll_number] = list(selections)
 
     def get_student_choice_selections(self, roll_number: str) -> List[StudentChoiceSelection]:
         return list(self.student_choice_selections.get(roll_number, []))
+
+    def get_lock_in_for_student(self, roll_number: str) -> Dict[str, str]:
+        """Returns {tag: subtag} mapping for this student's elective choices."""
+        selections = self.get_student_choice_selections(roll_number)
+        return {s.tag: s.subtag for s in selections}
+
+    def has_complete_lock_in(self, roll_number: str) -> bool:
+        """True if the student has selected a subtag for all choice-based tags in their semester."""
+        student = self.get_student(roll_number)
+        if not student:
+            return False
+        cb_tags = self.get_choice_based_tags()
+        sem_subjects = self.list_subjects(semester=student.semester)
+        applicable_tags = {s.subject_tag for s in sem_subjects if s.subject_tag in cb_tags}
+        if not applicable_tags:
+            return True  # No electives required for this semester
+        lock_in = self.get_lock_in_for_student(roll_number)
+        return all(tag in lock_in and bool(str(lock_in[tag]).strip()) for tag in applicable_tags)
+
+    def get_enrolled_subjects_for_student(self, roll_number: str) -> List[Subject]:
+        """List of subjects the student is enrolled in for this cycle.
+
+        - Non-choice subjects: all subjects in student's semester.
+        - Choice-based subjects: only those whose subtag matches student's locked-in subtag.
+        """
+        student = self.get_student(roll_number)
+        if not student:
+            return []
+        cb_tags = self.get_choice_based_tags()
+        sem_subjects = self.list_subjects(semester=student.semester)
+        lock_in = self.get_lock_in_for_student(roll_number)
+        enrolled: List[Subject] = []
+        for s in sem_subjects:
+            if s.subject_tag not in cb_tags:
+                enrolled.append(s)
+            else:
+                chosen_subtag = lock_in.get(s.subject_tag)
+                if chosen_subtag and s.subtag == chosen_subtag:
+                    enrolled.append(s)
+        return enrolled
+
+    def rankable_subjects_for_student(self, roll_number: str) -> List[Tuple[str, List[str]]]:
+        """(subject_code, [teacher_id, ...]) pairs for student's ENROLLED subjects
+        with 2+ eligible teachers."""
+        enrolled = self.get_enrolled_subjects_for_student(roll_number)
+        result = []
+        for subject in enrolled:
+            teacher_ids = self.teachers_for_subject(subject.subject_code)
+            if len(teacher_ids) >= 2:
+                result.append((subject.subject_code, teacher_ids))
+        return result
 
     # ── Sections (concrete teacher/time timetable data) ─────────────────────
     def list_sections(
@@ -234,49 +306,44 @@ class InMemoryStore:
         self.sections.pop(section_id, None)
 
     def enrolled_count_for_subject(
-        self, subject_code: str, run_id: int
+        self, subject_code: str, run_id: Optional[int] = None
     ) -> int:
-        """Count how many students in the run's semester are enrolled in
-        subject_code for Phase 8 lab-parallelism calculation.
+        """Count how many students are enrolled in subject_code.
 
-        Enrollment logic (Phase 8 approximation):
-        - For choice-based subjects: count students whose choice selections
-          for this run map to the subject's tag.
-        - For non-choice subjects: count all students in the run's semester
-          (every student takes non-choice subjects).
-        - If the subject or run doesn't exist, returns 0.
-
-        Phase 10 (manual overrides) can refine actual enrollment later.
+        - Non-choice subjects: all students in that subject's semester.
+        - Choice subjects: students whose locked-in subtag matches subject.subtag.
         """
-        run = self.get_run(run_id)
         subject = self.get_subject(subject_code)
-        if run is None or subject is None:
+        if subject is None:
             return 0
 
-        # Build the set of numeric values that map to this subject's tag.
-        choice_numeric_values = {
-            c.numeric_value
-            for c in run.choice_tag_configs
-            if c.tag == subject.subject_tag and c.is_choice_based
-        }
+        cb_tags = self.get_choice_based_tags()
+        semester_students = self.list_students(semester=subject.semester)
 
-        semester_students = self.list_students(semester=run.semester)
-
-        if not choice_numeric_values:
-            # Non-choice-based subject: all semester students are enrolled.
+        if subject.subject_tag not in cb_tags:
             return len(semester_students)
 
-        # Choice-based: count students who selected this subject's tag.
+        # Choice-based: count students whose lock-in matches this subject's subtag
         count = 0
         for student in semester_students:
-            selections = self.get_student_choice_selections(student.roll_number)
-            if any(sel.numeric_value in choice_numeric_values for sel in selections):
+            lock_in = self.get_lock_in_for_student(student.roll_number)
+            if subject.subtag and lock_in.get(subject.subject_tag) == subject.subtag:
                 count += 1
         return count
 
-    # ── Generation runs (semester-scoped, product decision #2) ─────────────
-    def create_run(self, semester: int) -> GenerationRun:
-        run = GenerationRun(id=self._next_run_id, semester=semester)
+    # ── Generation runs (department-scoped cycle) ──────────────────────────
+    def create_run(
+        self,
+        semesters: Optional[List[int]] = None,
+        semester: Optional[int] = None,
+    ) -> GenerationRun:
+        if semesters is not None:
+            sem_list = list(semesters)
+        elif semester is not None:
+            sem_list = [semester]
+        else:
+            sem_list = sorted({s.semester for s in self.subjects.values()})
+        run = GenerationRun(id=self._next_run_id, semesters=sem_list)
         self.runs[run.id] = run
         self._next_run_id += 1
         return run
@@ -287,14 +354,11 @@ class InMemoryStore:
     def list_runs(self, semester: Optional[int] = None) -> List[GenerationRun]:
         runs = list(self.runs.values())
         if semester is not None:
-            runs = [r for r in runs if r.semester == semester]
+            runs = [r for r in runs if semester in r.semesters]
         return runs
 
     def set_run_choice_tags(self, run_id: int, configs: List[ChoiceTagConfig]) -> GenerationRun:
-        """Replace a run's choice-tag configuration wholesale. The mapping
-        is only ever meaningful for this one run (product decision #3), so
-        there is no merge semantics here — the admin submits the full set
-        each time."""
+        """Legacy method kept for backward compatibility."""
         run = self.runs[run_id]
         run.choice_tag_configs = list(configs)
         return run

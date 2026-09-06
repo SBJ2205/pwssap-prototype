@@ -121,6 +121,43 @@ def validate_choice_tag_configs(configs: Iterable[ChoiceTagConfig]) -> List[str]
     return errors
 
 
+def validate_lock_in(
+    selections: Dict[str, str],
+    available_choices: Dict[str, List[str]],
+    choice_based_tags: Iterable[str],
+) -> List[str]:
+    """Validate student elective lock-in selections.
+
+    Rules:
+      - Exactly one subtag must be selected for every choice-based tag
+        applicable to the student's semester.
+      - No unrecognized tags.
+      - Each selected subtag must exist in available_choices for that tag.
+    """
+    errors: List[str] = []
+    required_tags = set(choice_based_tags)
+
+    # Check for missing required tags
+    for tag in sorted(required_tags):
+        subtag = selections.get(tag)
+        if not subtag or not str(subtag).strip():
+            errors.append(f"Selection missing for required elective tag '{tag}'.")
+
+    # Check each provided selection
+    for tag, subtag in selections.items():
+        if tag not in required_tags:
+            errors.append(f"Tag '{tag}' is not a configured elective tag for your semester.")
+            continue
+        valid_subtags = available_choices.get(tag, [])
+        if subtag not in valid_subtags:
+            errors.append(
+                f"Subtag '{subtag}' is not valid for tag '{tag}'. "
+                f"Must be one of: {', '.join(valid_subtags) if valid_subtags else 'none available'}."
+            )
+
+    return errors
+
+
 # ── Student time-slot preference validation (product decision #10) ─────────
 # A student should never be able to save a matrix that's effectively empty
 # or uninformative. BLOCKED_REJECT_RATIO is a hard cutoff (rejected outright,

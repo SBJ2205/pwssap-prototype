@@ -35,6 +35,7 @@ class Subject:
     type: SubjectType
     weekly_hours: int
     capacity: int
+    subtag: Optional[str] = None
     slot_structure: Optional[str] = None
     linked_pattern: Optional[List[str]] = None
 
@@ -76,36 +77,41 @@ class Student:
 
 
 @dataclass
-class ChoiceTagConfig:
-    """Run-scoped mapping from a numeric choice value to a subject_tag.
-
-    Only tags with is_choice_based=True participate in the student choice
-    columns (choice_1, choice_2, ...) for THIS run. There is no fixed
-    limit on how many tags are active at once (product decision #3), and
-    this mapping is only meaningful for the run it belongs to.
-    """
+class CycleChoiceConfig:
+    """Department-level configuration for a subject tag in the current cycle."""
     tag: str
-    numeric_value: int
+    is_choice_based: bool = True
+
+
+@dataclass
+class ChoiceTagConfig:
+    """Legacy run-scoped mapping kept for compatibility."""
+    tag: str
+    numeric_value: int = 1
     is_choice_based: bool = True
 
 
 @dataclass
 class StudentChoiceSelection:
-    """One (choice_column -> numeric_value) entry parsed from a student's
-    CSV row, e.g. choice_1=2 means "this student's 1st choice column
-    holds numeric value 2". Resolving that numeric value to a subject_tag
-    requires the run's ChoiceTagConfig list."""
+    """One (tag -> subtag) choice selection locked in by a student."""
     roll_number: str
-    choice_column: int  # 1-based position: choice_1, choice_2, ...
-    numeric_value: int
+    tag: str
+    subtag: str
 
 
 @dataclass
 class Meeting:
     """One weekly occurrence of a section, referencing a canonical
     TimeSlot.key (see domain/timeslots.py) rather than a free-form day/time
-    string."""
+    string.
+
+    For 3-hour subjects:
+      - one 2-hour meeting: duration_hours=2, slot_part=None
+      - one 1-hour remainder: duration_hours=1, slot_part=1 (first hour) or 2 (second hour)
+    """
     slot_key: str
+    duration_hours: int = 2
+    slot_part: Optional[int] = None
 
 
 @dataclass
@@ -130,9 +136,13 @@ class Section:
 
 @dataclass
 class GenerationRun:
-    """One semester-scoped solver run (product decision #2 and #3): the
-    choice-tag configuration below is only valid for this run."""
+    """One department-scoped solver run covering all active semesters together."""
     id: int
-    semester: int
+    semesters: List[int] = field(default_factory=list)
     status: RunStatus = RunStatus.DRAFT
     choice_tag_configs: List[ChoiceTagConfig] = field(default_factory=list)
+
+    @property
+    def semester(self) -> int:
+        """Compatibility property for code expecting a single semester."""
+        return self.semesters[0] if self.semesters else 0

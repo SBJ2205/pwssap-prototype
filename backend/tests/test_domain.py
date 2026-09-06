@@ -113,6 +113,35 @@ def test_choice_tag_config_unique_values_pass():
     assert validate_choice_tag_configs(configs) == []
 
 
+def test_lock_in_validation():
+    from domain.validation import validate_lock_in
+
+    available = {
+        "PE1": ["PE1-A", "PE1-B"],
+        "OE1": ["OE1-X", "OE1-Y"],
+    }
+    choice_tags = ["PE1", "OE1"]
+
+    # Valid complete selection
+    valid_sel = {"PE1": "PE1-A", "OE1": "OE1-X"}
+    assert validate_lock_in(valid_sel, available, choice_tags) == []
+
+    # Missing tag
+    partial_sel = {"PE1": "PE1-A"}
+    errors = validate_lock_in(partial_sel, available, choice_tags)
+    assert any("OE1" in e for e in errors)
+
+    # Invalid subtag
+    bad_subtag = {"PE1": "INVALID", "OE1": "OE1-X"}
+    errors = validate_lock_in(bad_subtag, available, choice_tags)
+    assert any("INVALID" in e for e in errors)
+
+    # Unknown tag
+    extra_tag = {"PE1": "PE1-A", "OE1": "OE1-X", "UNKNOWN": "VAL"}
+    errors = validate_lock_in(extra_tag, available, choice_tags)
+    assert any("UNKNOWN" in e for e in errors)
+
+
 def _run_all():
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_")]
     failures = 0
