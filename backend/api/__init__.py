@@ -3,6 +3,7 @@ from fastapi import APIRouter
 
 from api import (
     availability,
+    cycle,
     faculty_preferences,
     meta,
     overrides,
@@ -17,6 +18,7 @@ from api import (
 
 ALL_ROUTERS = [
     meta.router,
+    cycle.router,
     subjects.router,
     students.router,
     teachers.router,

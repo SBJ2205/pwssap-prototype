@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
+from domain.timeslots import get_meeting_times
 from ingestion.teachers_csv import parse_teachers_csv
 
 router = APIRouter()
@@ -99,15 +100,26 @@ def get_teacher_timetable(
     # Build slot lookup for time enrichment.
     slot_lookup = {s.key: s for s in store.list_time_slots()}
 
-    def _enrich_meeting(slot_key: Optional[str]) -> dict:
+    def _enrich_meeting(m) -> dict:
+        slot_key = m.slot_key
         if not slot_key:
-            return {"slot_key": None, "day": None, "start_time": None, "end_time": None}
+            return {
+                "slot_key": None,
+                "duration_hours": m.duration_hours,
+                "slot_part": m.slot_part,
+                "day": None,
+                "start_time": None,
+                "end_time": None,
+            }
         slot = slot_lookup.get(slot_key)
+        start_t, end_t = get_meeting_times(slot, m.duration_hours, m.slot_part)
         return {
             "slot_key": slot_key,
+            "duration_hours": m.duration_hours,
+            "slot_part": m.slot_part,
             "day": slot.day if slot else None,
-            "start_time": slot.start_time if slot else None,
-            "end_time": slot.end_time if slot else None,
+            "start_time": start_t,
+            "end_time": end_t,
         }
 
     # Find all sections assigned to this teacher (optionally run-scoped).
@@ -132,7 +144,7 @@ def get_teacher_timetable(
             "capacity": section.capacity,
             "enrolled_count": len(enrolled),
             "enrolled_students": enrolled,
-            "meetings": [_enrich_meeting(m.slot_key) for m in section.meetings],
+            "meetings": [_enrich_meeting(m) for m in section.meetings],
         })
 
     # Sort by section label for stable ordering.

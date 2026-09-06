@@ -29,6 +29,7 @@ from api.deps import require_admin
 from data.store import InMemoryStore, get_store
 from domain.models import Section
 from domain.section_generation import generate_sections_for_run
+from domain.timeslots import get_meeting_times
 
 router = APIRouter(
     prefix="/admin/runs",
@@ -37,6 +38,7 @@ router = APIRouter(
 
 
 # ── Serialisation helpers ─────────────────────────────────────────────────
+
 
 def _section_to_dict(section: Section) -> dict:
     return {
@@ -47,7 +49,11 @@ def _section_to_dict(section: Section) -> dict:
         "teacher_id": section.teacher_id,
         "capacity": section.capacity,
         "meetings": [
-            {"slot_key": m.slot_key or None}
+            {
+                "slot_key": m.slot_key or None,
+                "duration_hours": m.duration_hours,
+                "slot_part": m.slot_part,
+            }
             for m in section.meetings
         ],
     }
@@ -64,11 +70,14 @@ def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
     for m in section.meetings:
         sk = m.slot_key
         slot = slot_lookup.get(sk) if sk else None
+        start_t, end_t = _get_meeting_times(slot, m.duration_hours, m.slot_part)
         enriched_meetings.append({
             "slot_key": sk or None,
+            "duration_hours": m.duration_hours,
+            "slot_part": m.slot_part,
             "day": slot.day if slot else None,
-            "start_time": slot.start_time if slot else None,
-            "end_time": slot.end_time if slot else None,
+            "start_time": start_t,
+            "end_time": end_t,
         })
 
     return {
@@ -90,13 +99,7 @@ def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
 
 @router.post("/{run_id}/generate-sections")
 def generate_sections(run_id: int, store: InMemoryStore = Depends(get_store)):
-    """Trigger section generation for a run.
-
-    Idempotent: any sections previously generated for this run are cleared
-    first.  The caller (admin) can safely re-run this endpoint to regenerate
-    after changing teacher availability or the subject catalog, without
-    creating duplicate sections.
-    """
+    """Trigger section generation for a run across all active semesters."""
     run = store.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -104,8 +107,20 @@ def generate_sections(run_id: int, store: InMemoryStore = Depends(get_store)):
     # Clear previous sections for this run.
     cleared_count = store.clear_sections_for_run(run_id)
 
-    # Collect all subjects for the run's semester.
-    subjects = store.list_subjects(semester=run.semester)
+    # Collect all subjects for the run's semesters (or semester).
+    if run.semesters:
+        subjects = [s for sem in run.semesters for s in store.list_subjects(semester=sem)]
+    else:
+        subjects = store.list_subjects(semester=run.semester)
+
+    # De-duplicate by subject_code if needed
+    seen_codes = set()
+    deduped_subjects = []
+    for s in subjects:
+        if s.subject_code not in seen_codes:
+            seen_codes.add(s.subject_code)
+            deduped_subjects.append(s)
+    subjects = deduped_subjects
 
     # Build per-subject capable-teacher lists and teacher availability maps.
     capable_teacher_ids_for = {
@@ -240,6 +255,7 @@ def get_run_summary(run_id: int, store: InMemoryStore = Depends(get_store)):
     return {
         "run_id": run_id,
         "semester": run.semester,
+        "semesters": run.semesters,
         "run_status": run.status.value,
         "section_count": len(sections),
         "sections": section_dicts,

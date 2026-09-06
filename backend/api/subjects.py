@@ -21,6 +21,7 @@ def _subject_to_dict(subject) -> dict:
         "subject_code": subject.subject_code,
         "subject_name": subject.subject_name,
         "subject_tag": subject.subject_tag,
+        "subtag": subject.subtag,
         "semester": subject.semester,
         "type": subject.type.value if hasattr(subject.type, "value") else subject.type,
         "weekly_hours": subject.weekly_hours,
@@ -36,9 +37,19 @@ def list_subjects(semester: Optional[int] = None, store: InMemoryStore = Depends
 
 @router.get("/admin/subjects/tags", dependencies=[Depends(require_admin)])
 def list_subject_tags(semester: Optional[int] = None, store: InMemoryStore = Depends(get_store)):
-    """Distinct subject_tag values in the catalog, for the admin's
-    choice-tag configuration screen (product decision #3)."""
-    return {"tags": store.list_subject_tags(semester)}
+    """Distinct subject_tag values in the catalog and their subtags."""
+    tags = store.list_subject_tags(semester)
+    groups = store.get_choice_groups(semester)
+    return {
+        "tags": tags,
+        "groups": groups,
+    }
+
+
+@router.get("/admin/subjects/choice-groups", dependencies=[Depends(require_admin)])
+def get_choice_groups(semester: Optional[int] = None, store: InMemoryStore = Depends(get_store)):
+    """Returns {tag: [subtag, ...]} for tags that have defined subtags in the catalog."""
+    return store.get_choice_groups(semester)
 
 
 @router.post("/admin/subjects/import", dependencies=[Depends(require_admin)])

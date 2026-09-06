@@ -27,13 +27,15 @@ class ChoiceTagConfigPayload(BaseModel):
 
 
 class CreateRunPayload(BaseModel):
-    semester: int
+    semester: Optional[int] = None
+    semesters: Optional[List[int]] = None
     choice_tags: List[ChoiceTagConfigPayload] = []
 
 
 def _run_to_dict(run: GenerationRun) -> dict:
     return {
         "id": run.id,
+        "semesters": run.semesters,
         "semester": run.semester,
         "status": run.status.value if hasattr(run.status, "value") else run.status,
         "choice_tag_configs": [
@@ -69,23 +71,27 @@ def get_run(run_id: int, store: InMemoryStore = Depends(get_store)):
 
 @router.post("")
 def create_run(payload: CreateRunPayload, store: InMemoryStore = Depends(get_store)):
-    semester_errors = validate_semester(payload.semester)
-    if semester_errors:
-        raise HTTPException(status_code=400, detail={"errors": semester_errors})
+    if payload.semesters:
+        sem_list = payload.semesters
+    elif payload.semester is not None:
+        sem_list = [payload.semester]
+    else:
+        sem_list = sorted({s.semester for s in store.subjects.values()})
+
+    for s in sem_list:
+        errors = validate_semester(s)
+        if errors:
+            raise HTTPException(status_code=400, detail={"errors": errors})
 
     configs = _validate_and_build_configs(payload.choice_tags)
 
-    # Soft, non-blocking sanity check: a tag configured with zero matching
-    # subjects is probably a typo, but the admin may legitimately be
-    # configuring ahead of a subject CSV upload, so this is a warning
-    # rather than a hard rejection.
-    available_tags = set(store.list_subject_tags(payload.semester))
+    available_tags = set(store.list_subject_tags())
     warnings = [
-        f"Tag '{c.tag}' has no subjects in semester {payload.semester} yet."
+        f"Tag '{c.tag}' has no subjects in the catalog yet."
         for c in configs if c.tag not in available_tags
     ]
 
-    run = store.create_run(payload.semester)
+    run = store.create_run(semesters=sem_list)
     store.set_run_choice_tags(run.id, configs)
 
     response = _run_to_dict(run)

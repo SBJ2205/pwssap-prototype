@@ -33,12 +33,10 @@ def _require_student(roll_number: str, store: InMemoryStore):
 
 @router.get("/students/{roll_number}/rankable-subjects")
 def get_rankable_subjects(roll_number: str, store: InMemoryStore = Depends(get_store)):
-    """Which subjects this student can even submit a faculty preference
-    for, and which teachers are eligible for each — lets the frontend
-    build the ranking form without guessing."""
+    """Which subjects this student can submit faculty preference for (scoped to enrolled subjects)."""
     student = _require_student(roll_number, store)
     result = []
-    for code, teacher_ids in store.rankable_subjects_for_semester(student.semester):
+    for code, teacher_ids in store.rankable_subjects_for_student(roll_number):
         teachers = []
         for tid in teacher_ids:
             teacher = store.get_teacher(tid)
@@ -60,7 +58,13 @@ def save_faculty_preferences(
 ):
     student = _require_student(roll_number, store)
 
-    rankable = dict(store.rankable_subjects_for_semester(student.semester))
+    if not store.has_complete_lock_in(roll_number):
+        raise HTTPException(
+            status_code=409,
+            detail="Please complete your elective lock-in before submitting faculty preferences.",
+        )
+
+    rankable = dict(store.rankable_subjects_for_student(roll_number))
     result = validate_faculty_preferences(payload.preferences, rankable)
     if not result.is_valid:
         raise HTTPException(status_code=400, detail={"errors": result.errors})

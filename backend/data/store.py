@@ -338,7 +338,10 @@ class InMemoryStore:
         semester: Optional[int] = None,
     ) -> GenerationRun:
         if semesters is not None:
-            sem_list = list(semesters)
+            if isinstance(semesters, int):
+                sem_list = [semesters]
+            else:
+                sem_list = list(semesters)
         elif semester is not None:
             sem_list = [semester]
         else:

@@ -35,8 +35,16 @@ def _section_to_dict(section: Section) -> dict:
         "label": section.label,
         "teacher_id": section.teacher_id,
         "capacity": section.capacity,
-        "meetings": [{"slot_key": m.slot_key or None} for m in section.meetings],
+        "meetings": [
+            {
+                "slot_key": m.slot_key or None,
+                "duration_hours": m.duration_hours,
+                "slot_part": m.slot_part,
+            }
+            for m in section.meetings
+        ],
     }
+
 
 
 @router.post("/{run_id}/solve")

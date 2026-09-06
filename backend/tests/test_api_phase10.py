@@ -320,18 +320,14 @@ def test_reassign_teacher():
               resp_t1.status_code == 200 and
               not any("capability" in w.lower() for w in resp_t1.json().get("warnings", [])))
 
-    # Non-capable teacher: should warn but still accept.
+    # Non-capable teacher: should reject (400) under realigned spec.
     EXTRA_TEACHER = "teacher_id,teacher_name\nT999,Dr. Incapable\n"
     client.post("/admin/teachers/import", headers=ADMIN,
                 files={"file": ("t2.csv", EXTRA_TEACHER, "text/csv")})
     resp_warn = client.put(f"/admin/sections/{theory_id}/teacher",
                            headers=ADMIN, json={"teacher_id": "T999"})
-    check("non-capable teacher override -> 200", resp_warn.status_code == 200)
-    body_warn = resp_warn.json()
-    check(
-        "capability warning present for non-capable teacher",
-        any("capability" in w.lower() for w in body_warn.get("warnings", [])),
-    )
+    check("non-capable teacher override -> 400", resp_warn.status_code == 400)
+    check("capability error detail present", "not capable" in resp_warn.text.lower())
 
 
 test_reassign_teacher()

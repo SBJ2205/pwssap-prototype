@@ -14,7 +14,7 @@ system (student preference forms, teacher availability, section
 generation, the solver). Nothing here is per-run or per-semester data.
 """
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 from domain.enums import SubjectType, WORKING_DAYS
 
@@ -67,3 +67,29 @@ def is_slot_usable(slot: TimeSlot) -> bool:
 
 def slot_allows(slot: TimeSlot, subject_type: SubjectType) -> bool:
     return subject_type in slot.allowed_types
+
+
+def get_meeting_times(
+    slot: Optional[TimeSlot],
+    duration_hours: int = 2,
+    slot_part: Optional[int] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return the actual (start_time, end_time) string tuple for a meeting.
+
+    For a standard 2-hour meeting, returns the physical slot's full range (e.g. 09:00, 11:00).
+    For a 1-hour remainder:
+      - slot_part=1 (or None default for 1h): first hour (e.g. 09:00, 10:00)
+      - slot_part=2: second hour (e.g. 10:00, 11:00)
+    """
+    if not slot:
+        return None, None
+    if duration_hours == 2 or (duration_hours != 1 and not slot_part):
+        return slot.start_time, slot.end_time
+
+    # 1-hour remainder
+    part = slot_part or 1
+    sh, sm = map(int, slot.start_time.split(":"))
+    if part == 1:
+        return slot.start_time, f"{sh + 1:02d}:{sm:02d}"
+    else:
+        return f"{sh + 1:02d}:{sm:02d}", slot.end_time

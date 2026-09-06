@@ -50,6 +50,12 @@ def save_time_preferences(
 ):
     _require_student(roll_number, store)
 
+    if not store.has_complete_lock_in(roll_number):
+        raise HTTPException(
+            status_code=409,
+            detail="Please complete your elective lock-in before submitting time preferences.",
+        )
+
     ratable_keys = {slot.key for slot in store.list_ratable_time_slots()}
     result = validate_time_slot_preferences(payload.ratings, ratable_keys)
     if not result.is_valid:

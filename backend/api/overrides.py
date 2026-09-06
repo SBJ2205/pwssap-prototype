@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
 from domain.models import Section
+from domain.timeslots import get_meeting_times
 
 admin_router = APIRouter(prefix="/admin/sections", dependencies=[Depends(require_admin)])
 student_router = APIRouter(prefix="/students")
@@ -171,22 +172,29 @@ def reassign_teacher(
     meeting at the same slot).  Both warnings are non-blocking.
     """
     section = _get_section_or_404(section_id, store)
+    warnings: List[str] = []
 
     teacher = store.get_teacher(payload.teacher_id)
     if teacher is None:
         raise HTTPException(status_code=404, detail="Teacher not found")
 
-    warnings = []
-
-    # Capability check (warn, not reject — admin override).
+    # Capability check (hard reject 400).
     capable = store.teachers_for_subject(section.subject_code)
     if payload.teacher_id not in capable:
-        warnings.append(
-            f"Teacher {payload.teacher_id} is not in the capability list for "
-            f"subject {section.subject_code}. Assigning anyway as admin override."
+        raise HTTPException(
+            status_code=400,
+            detail=f"Teacher {payload.teacher_id} is not capable of teaching subject {section.subject_code}.",
         )
 
-    # Double-booking check.
+    # Availability check (hard reject 400).
+    for m in section.meetings:
+        if m.slot_key and not store.is_teacher_available(payload.teacher_id, m.slot_key):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Teacher {payload.teacher_id} is marked unavailable for slot '{m.slot_key}'.",
+            )
+
+    # Double-booking check (non-blocking warning).
     section_slot_keys = {m.slot_key for m in section.meetings if m.slot_key}
     teacher_occupied = set(
         store.slot_keys_for_teacher(payload.teacher_id, exclude_section_id=section_id)
@@ -195,7 +203,7 @@ def reassign_teacher(
     if clashing:
         warnings.append(
             f"Teacher {payload.teacher_id} already teaches another section "
-            f"in slot(s) {sorted(clashing)}. Assigning anyway."
+            f"in slot(s) {sorted(clashing)}. Assigning anyway as admin override."
         )
 
     section.teacher_id = payload.teacher_id
@@ -274,15 +282,26 @@ def get_student_sections(
     # Build a lookup from slot_key -> TimeSlot for enrichment.
     slot_lookup = {s.key: s for s in store.list_time_slots()}
 
-    def _enrich_meeting(slot_key: Optional[str]) -> dict:
+    def _enrich_meeting(m) -> dict:
+        slot_key = m.slot_key
         if not slot_key:
-            return {"slot_key": None, "day": None, "start_time": None, "end_time": None}
+            return {
+                "slot_key": None,
+                "duration_hours": m.duration_hours,
+                "slot_part": m.slot_part,
+                "day": None,
+                "start_time": None,
+                "end_time": None,
+            }
         slot = slot_lookup.get(slot_key)
+        start_t, end_t = get_meeting_times(slot, m.duration_hours, m.slot_part)
         return {
             "slot_key": slot_key,
+            "duration_hours": m.duration_hours,
+            "slot_part": m.slot_part,
             "day": slot.day if slot else None,
-            "start_time": slot.start_time if slot else None,
-            "end_time": slot.end_time if slot else None,
+            "start_time": start_t,
+            "end_time": end_t,
         }
 
     assignments = store.get_student_sections(roll_number)
@@ -302,7 +321,7 @@ def get_student_sections(
             "section_label": section.label,
             "teacher_id": section.teacher_id,
             "teacher_name": teacher.teacher_name if teacher else None,
-            "meetings": [_enrich_meeting(m.slot_key) for m in section.meetings],
+            "meetings": [_enrich_meeting(m) for m in section.meetings],
         })
 
     # Sort timetable by subject_code for stable ordering.
