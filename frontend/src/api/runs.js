@@ -38,8 +38,10 @@ export const getSections = (runId, subjectCode) => {
 // POST /admin/runs/{id}/solve  →  {status, sections: [...], warnings: [...]}
 // status: "OPTIMAL" | "FEASIBLE" | "INFEASIBLE"
 // After a successful solve the run transitions to PUBLISHED automatically.
-export const runSolve = (runId) =>
-  client.post(`/admin/runs/${runId}/solve`).then(r => r.data);
+export const runSolve = (runId, timeLimit) => {
+  const params = timeLimit != null ? { time_limit: timeLimit } : {};
+  return client.post(`/admin/runs/${runId}/solve`, null, { params }).then(r => r.data);
+};
 
 // ── Published timetable (admin) ─────────────────────────────────────────
 // GET /admin/runs/{id}/summary

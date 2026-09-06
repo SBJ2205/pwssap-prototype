@@ -1,11 +1,12 @@
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import { getSubjects, importSubjects } from "../../api/catalog";
+import { getCycleStatus, setCycleChoiceTags } from "../../api/cycle";
 import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
 import { downloadCsv, parseCsvText, SUBJECT_CSV_TEMPLATE } from "../../utils/csv";
 import { ALL_SEMESTERS, td } from "../../constants";
 import { Card, PageHeader, Badge, InfoBox, MetricsRow } from "../../components/ui";
 
-export default function AdminSubjects() {
+export default function AdminSubjects({ refreshCycle, reload }) {
   const [subjects, setSubjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -69,6 +70,8 @@ export default function AdminSubjects() {
       setSelectedFile(null);
       setPreviewData(null);
       await loadCatalog();
+      if (refreshCycle) await refreshCycle();
+      if (reload) reload();
     } catch (err) {
       const details = getApiErrorDetails(err);
       if (details?.row_errors) {
@@ -253,8 +256,10 @@ export default function AdminSubjects() {
       {/* Cycle Elective Configuration */}
       <CycleElectiveConfigCard
         subjects={subjects}
+        refreshCycle={refreshCycle}
         onConfigSaved={() => {
           loadCatalog();
+          if (refreshCycle) refreshCycle();
         }}
       />
 
@@ -397,7 +402,7 @@ export default function AdminSubjects() {
   );
 }
 
-function CycleElectiveConfigCard({ onConfigSaved }) {
+function CycleElectiveConfigCard({ subjects, onConfigSaved, refreshCycle }) {
   const [cycleData, setCycleData] = useState(null);
   const [tagMap, setTagMap] = useState({});
   const [loading, setLoading] = useState(true);
@@ -405,30 +410,37 @@ function CycleElectiveConfigCard({ onConfigSaved }) {
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
-  useEffect(() => {
+  const fetchCycleData = useCallback(() => {
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    import("../../api/cycle").then(({ getCycleStatus }) => {
-      getCycleStatus()
-        .then(data => {
-          if (cancelled) return;
-          setCycleData(data);
-          const map = {};
-          (data?.tags_detail || []).forEach(t => {
-            map[t.tag] = Boolean(t.is_choice_based);
-          });
-          setTagMap(map);
-        })
-        .catch(e => {
-          if (!cancelled) setErr(apiErrorMessage(e));
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
+    setErr(null);
+    getCycleStatus()
+      .then(data => {
+        if (cancelled) return;
+        setCycleData(data);
+        const tags = data?.tags_detail || data?.choice_tags || [];
+        const map = {};
+        tags.forEach(t => {
+          map[t.tag] = Boolean(t.is_choice_based);
         });
-    });
+        setTagMap(map);
+      })
+      .catch(e => {
+        if (!cancelled) setErr(apiErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const cancel = fetchCycleData();
+    return () => {
+      if (typeof cancel === "function") cancel();
+    };
+  }, [fetchCycleData, subjects]);
 
   const handleToggle = (tag) => {
     setTagMap(prev => ({
@@ -443,11 +455,11 @@ function CycleElectiveConfigCard({ onConfigSaved }) {
     setMsg(null);
     setErr(null);
     try {
-      const { setCycleChoiceTags } = await import("../../api/cycle");
       const updated = await setCycleChoiceTags(tagMap);
       setCycleData(updated);
       setMsg("Cycle elective tag configuration saved successfully!");
       if (onConfigSaved) onConfigSaved();
+      if (refreshCycle) refreshCycle();
     } catch (e) {
       setErr(apiErrorMessage(e));
     } finally {
@@ -455,7 +467,7 @@ function CycleElectiveConfigCard({ onConfigSaved }) {
     }
   };
 
-  const tagsDetail = cycleData?.tags_detail || [];
+  const tagsDetail = cycleData?.tags_detail || cycleData?.choice_tags || [];
 
   return (
     <Card>

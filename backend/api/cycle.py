@@ -52,10 +52,12 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
 
     tags_detail = []
     for tag in all_tags:
+        subtags = choice_groups.get(tag, [])
+        default_is_choice = bool(subtags and tag.upper() != "CORE")
         tags_detail.append({
             "tag": tag,
-            "is_choice_based": choice_configs.get(tag, False),
-            "subtags": choice_groups.get(tag, []),
+            "is_choice_based": choice_configs.get(tag, default_is_choice),
+            "subtags": subtags,
         })
 
     lock_in_complete = sum(1 for s in students if store.has_complete_lock_in(s.roll_number))
@@ -77,6 +79,7 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
         "students_per_semester": students_per_sem,
         "teachers_count": len(store.teachers),
         "choice_tags": tags_detail,
+        "tags_detail": tags_detail,
         "lock_in_complete_count": lock_in_complete,
         "lock_in_total_students": len(students),
         "current_run": latest_run,
@@ -150,8 +153,17 @@ def initialize_cycle(store: InMemoryStore = Depends(get_store)):
     else:
         run = store.create_run(semesters=active_semesters)
 
+    run_dict = {
+        "id": run.id,
+        "semesters": run.semesters,
+        "semester": run.semester,
+        "status": run.status.value,
+    }
+
     return {
         "run_id": run.id,
         "semesters": run.semesters,
+        "semester": run.semester,
         "status": run.status.value,
+        "current_run": run_dict,
     }

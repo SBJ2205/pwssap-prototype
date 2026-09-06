@@ -119,7 +119,9 @@ class InMemoryStore:
         return dict(self.cycle_choice_configs)
 
     def get_choice_based_tags(self) -> set:
-        return {tag for tag, is_cb in self.cycle_choice_configs.items() if is_cb}
+        if self.cycle_choice_configs:
+            return {tag for tag, is_cb in self.cycle_choice_configs.items() if is_cb}
+        return {tag for tag, subtags in self.get_choice_groups().items() if subtags and tag.upper() != "CORE"}
 
     # ── Teachers ───────────────────────────────────────────────────────────
     def list_teachers(self) -> List[Teacher]:

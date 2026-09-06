@@ -10,9 +10,12 @@ export default function AdminSolver({
   cycleStatus,
   refreshCycle,
   setPage,
+  activeRunId,
+  setActiveRunId,
 }) {
+  const [internalRunId, setInternalRunId] = useState(null);
   const currentRun = cycleStatus?.current_run;
-  const currentRunId = currentRun?.id;
+  const currentRunId = internalRunId || currentRun?.id || activeRunId;
 
   // Preflight data counts
   const [subjectsCount, setSubjectsCount] = useState(0);
@@ -48,8 +51,9 @@ export default function AdminSolver({
       setStudentsCount(stus.length);
       setTeachersCount(teas.length);
 
-      if (currentRunId) {
-        const secs = await getSections(currentRunId).catch(() => ({ count: 0 }));
+      const runId = internalRunId || currentRunId;
+      if (runId) {
+        const secs = await getSections(runId).catch(() => ({ count: 0 }));
         setSectionsCount(secs.count || 0);
       } else {
         setSectionsCount(0);
@@ -57,7 +61,7 @@ export default function AdminSolver({
     } finally {
       setPreflightLoading(false);
     }
-  }, [currentRunId]);
+  }, [internalRunId, currentRunId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -66,7 +70,12 @@ export default function AdminSolver({
 
   async function handleInitCycle() {
     try {
-      await initializeCycle();
+      const res = await initializeCycle();
+      const rid = res?.run_id || res?.current_run?.id;
+      if (rid) {
+        setInternalRunId(rid);
+        if (setActiveRunId) setActiveRunId(rid);
+      }
       if (refreshCycle) await refreshCycle();
       checkPreflight();
     } catch (err) {
@@ -75,16 +84,25 @@ export default function AdminSolver({
   }
 
   async function handleGenerateSections() {
-    let runIdToUse = currentRunId;
+    let runIdToUse = internalRunId || currentRunId || activeRunId;
     if (!runIdToUse) {
       try {
         const res = await initializeCycle();
-        runIdToUse = res.current_run?.id;
-        if (refreshCycle) refreshCycle();
+        runIdToUse = res?.run_id || res?.current_run?.id;
+        if (runIdToUse) {
+          setInternalRunId(runIdToUse);
+          if (setActiveRunId) setActiveRunId(runIdToUse);
+        }
+        if (refreshCycle) await refreshCycle();
       } catch (err) {
         setGenError(apiErrorMessage(err));
         return;
       }
+    }
+
+    if (!runIdToUse || isNaN(Number(runIdToUse))) {
+      setGenError("Unable to initialize or find a valid department scheduling cycle. Please ensure subjects are uploaded.");
+      return;
     }
 
     setGenerating(true);
@@ -108,8 +126,8 @@ export default function AdminSolver({
   }
 
   async function handleRunSolver() {
-    let runIdToUse = currentRunId;
-    if (!runIdToUse) {
+    let runIdToUse = internalRunId || currentRunId || activeRunId;
+    if (!runIdToUse || isNaN(Number(runIdToUse))) {
       setSolveError("No cycle run initialized. Click 'Generate Sections' first.");
       return;
     }
@@ -125,7 +143,7 @@ export default function AdminSolver({
     }, 200);
 
     try {
-      const res = await runSolve(runIdToUse);
+      const res = await runSolve(runIdToUse, timeLimit);
       clearInterval(timer);
       setProgress(100);
       setSolveResult(res);
