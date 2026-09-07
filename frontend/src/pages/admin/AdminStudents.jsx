@@ -10,6 +10,7 @@ import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
 import { downloadCsv, parseCsvText, generateStudentCsvTemplate } from "../../utils/csv";
 import { td, RATING_META } from "../../constants";
 import { Card, PageHeader, Badge, InfoBox } from "../../components/ui";
+import StudentLockInOverrideModal from "../../components/StudentLockInOverrideModal";
 
 export default function AdminStudents({
   reload,
@@ -17,6 +18,7 @@ export default function AdminStudents({
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [overrideModalStudent, setOverrideModalStudent] = useState(null);
 
   // File upload state
   const [selectedFile, setSelectedFile] = useState(null);
@@ -404,11 +406,28 @@ export default function AdminStudents({
                     <div style={{ fontWeight: 600, fontSize: 12, color: "#555", textTransform: "uppercase", letterSpacing: "0.05em" }}>
                       Elective Lock-In
                     </div>
-                    {studentLockIn?.complete ? (
-                      <Badge color="green">Complete</Badge>
-                    ) : (
-                      <Badge color="amber">Incomplete</Badge>
-                    )}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {studentLockIn?.complete ? (
+                        <Badge color="green">Complete</Badge>
+                      ) : (
+                        <Badge color="amber">Incomplete</Badge>
+                      )}
+                      <button
+                        onClick={() => setOverrideModalStudent(inspectStudent)}
+                        style={{
+                          padding: "3px 8px",
+                          background: "#185FA5",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Override Choices →
+                      </button>
+                    </div>
                   </div>
 
                   {!studentLockIn || Object.keys(studentLockIn.locked_in || {}).length === 0 ? (
@@ -516,6 +535,16 @@ export default function AdminStudents({
           </Card>
         )}
       </div>
+
+      <StudentLockInOverrideModal
+        student={overrideModalStudent}
+        isOpen={Boolean(overrideModalStudent)}
+        onClose={() => setOverrideModalStudent(null)}
+        onSuccess={() => {
+          if (inspectStudent) openStudentInspector(inspectStudent);
+          if (reload) reload();
+        }}
+      />
     </div>
   );
 }

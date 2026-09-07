@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { getSubjects, getStudents, getTeachers } from "../../api/catalog";
-import { initializeCycle } from "../../api/cycle";
-import { Card, PageHeader, InfoBox, MetricsRow } from "../../components/ui";
+import { initializeCycle, autoLockInPending } from "../../api/cycle";
+import { apiErrorMessage } from "../../api/client";
+import { Card, PageHeader, InfoBox, MetricsRow, Badge } from "../../components/ui";
 import CycleBanner from "../../components/CycleBanner";
+import StudentLockInOverrideModal from "../../components/StudentLockInOverrideModal";
 
 export default function AdminDashboard({
   cycleStatus,
@@ -12,6 +14,13 @@ export default function AdminDashboard({
   const [subjects, setSubjects] = useState([]);
   const [students, setStudents] = useState([]);
   const [teachers, setTeachers] = useState([]);
+
+  // Student lock-in inspection & override state
+  const [showLockInBreakdown, setShowLockInBreakdown] = useState(false);
+  const [lockInFilter, setLockInFilter] = useState("all");
+  const [overrideModalStudent, setOverrideModalStudent] = useState(null);
+  const [autoLocking, setAutoLocking] = useState(false);
+  const [autoLockMsg, setAutoLockMsg] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,12 +42,56 @@ export default function AdminDashboard({
   const currentRun = cycleStatus?.current_run;
   const isPublished = currentRun?.status === "PUBLISHED" || currentRun?.status === "published";
 
+  const lockInStudents = useMemo(() => {
+    if (cycleStatus?.students_lock_in && cycleStatus.students_lock_in.length > 0) {
+      return cycleStatus.students_lock_in;
+    }
+    return students.map(s => ({
+      roll_number: s.roll_number,
+      name: s.name,
+      semester: s.semester,
+      is_complete: false,
+      locked_in: {},
+      applicable_tags: [],
+      missing_tags: [],
+    }));
+  }, [cycleStatus?.students_lock_in, students]);
+
+  const pendingStudents = useMemo(() => {
+    return lockInStudents.filter(s => !s.is_complete);
+  }, [lockInStudents]);
+
+  const completedStudents = useMemo(() => {
+    return lockInStudents.filter(s => s.is_complete);
+  }, [lockInStudents]);
+
+  const filteredLockInStudents = useMemo(() => {
+    if (lockInFilter === "pending") return pendingStudents;
+    if (lockInFilter === "complete") return completedStudents;
+    return lockInStudents;
+  }, [lockInFilter, lockInStudents, pendingStudents, completedStudents]);
+
   const handleInitCycle = async () => {
     try {
       await initializeCycle();
       if (refreshCycle) refreshCycle();
     } catch {
       // handled
+    }
+  };
+
+  const handleAutoLockIn = async () => {
+    if (!window.confirm("Auto-assign the first available elective subtag to all pending students?")) return;
+    setAutoLocking(true);
+    setAutoLockMsg(null);
+    try {
+      const res = await autoLockInPending();
+      setAutoLockMsg(`Auto-assigned elective choices for ${res.auto_locked_count} student(s)!`);
+      if (refreshCycle) await refreshCycle();
+    } catch (err) {
+      setAutoLockMsg(`Failed to auto-assign choices: ${apiErrorMessage(err)}`);
+    } finally {
+      setAutoLocking(false);
     }
   };
 
@@ -97,9 +150,11 @@ export default function AdminDashboard({
       title: "6. Student Elective Lock-In",
       done: (cycleStatus?.lock_in_total_students > 0) && (cycleStatus?.lock_in_complete_count === cycleStatus?.lock_in_total_students),
       desc: cycleStatus?.lock_in_total_students > 0
-        ? `${cycleStatus.lock_in_complete_count}/${cycleStatus.lock_in_total_students} students have locked in their elective choices`
+        ? (cycleStatus.lock_in_complete_count === cycleStatus.lock_in_total_students
+            ? `All ${cycleStatus.lock_in_total_students} students have locked in their elective choices!`
+            : `${cycleStatus.lock_in_complete_count}/${cycleStatus.lock_in_total_students} students have locked in their elective choices (${pendingStudents.length} pending).`)
         : "Students lock in elective subtags to unlock time and faculty preference submission.",
-      actionLabel: "Inspect Lock-Ins →",
+      actionLabel: showLockInBreakdown ? "Hide Choices ▲" : "Inspect & Override Choices ▼",
       pageKey: "admin-students",
     },
     {
@@ -175,68 +230,314 @@ export default function AdminDashboard({
         {/* Steps List */}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {steps.map(step => (
-            <div
-              key={step.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "12px 14px",
-                borderRadius: 8,
-                background: step.done ? "#F7FAF4" : "#fff",
-                border: step.done ? "1px solid #C0DD97" : "1px solid #e5e3dc",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: "50%",
-                    background: step.done ? "#1D9E75" : "#f1efe8",
-                    color: step.done ? "#fff" : "#888",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    flexShrink: 0,
-                  }}
-                >
-                  {step.done ? "✓" : "○"}
+            <div key={step.id}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 14px",
+                  borderRadius: 8,
+                  background: step.done ? "#F7FAF4" : "#fff",
+                  border: step.done ? "1px solid #C0DD97" : "1px solid #e5e3dc",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      background: step.done ? "#1D9E75" : "#f1efe8",
+                      color: step.done ? "#fff" : "#888",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {step.done ? "✓" : "○"}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: step.done ? "#27500A" : "#333" }}>
+                      {step.title}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                      {step.desc}
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, color: step.done ? "#27500A" : "#333" }}>
-                    {step.title}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                    {step.desc}
-                  </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {step.id === "lock-in" ? (
+                    <>
+                      <button
+                        onClick={() => setShowLockInBreakdown(prev => !prev)}
+                        style={{
+                          padding: "6px 12px",
+                          background: showLockInBreakdown ? "#0f172a" : (step.done ? "#fff" : "#185FA5"),
+                          color: showLockInBreakdown ? "#fff" : (step.done ? "#27500A" : "#fff"),
+                          border: step.done && !showLockInBreakdown ? "1px solid #C0DD97" : "none",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <span>{showLockInBreakdown ? "Hide Choices ▲" : "Inspect & Override Choices ▼"}</span>
+                        {pendingStudents.length > 0 && (
+                          <span style={{ background: "#ef4444", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10 }}>
+                            {pendingStudents.length} pending
+                          </span>
+                        )}
+                      </button>
+                      {setPage && (
+                        <button
+                          onClick={() => setPage("admin-students")}
+                          style={{
+                            padding: "6px 10px",
+                            background: "#f1efe8",
+                            border: "1px solid #d1cfc7",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            color: "#475569",
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Roster →
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    step.actionLabel && setPage && (
+                      <button
+                        onClick={() => setPage(step.pageKey)}
+                        style={{
+                          padding: "6px 12px",
+                          background: step.done ? "#fff" : "#185FA5",
+                          color: step.done ? "#27500A" : "#fff",
+                          border: step.done ? "1px solid #C0DD97" : "none",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {step.actionLabel}
+                      </button>
+                    )
+                  )}
                 </div>
               </div>
 
-              {step.actionLabel && setPage && (
-                <button
-                  onClick={() => setPage(step.pageKey)}
+              {/* Step 6 Lock-In Interactive Breakdown Drawer */}
+              {step.id === "lock-in" && showLockInBreakdown && (
+                <div
                   style={{
-                    padding: "6px 12px",
-                    background: step.done ? "#fff" : "#185FA5",
-                    color: step.done ? "#27500A" : "#fff",
-                    border: step.done ? "1px solid #C0DD97" : "none",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
+                    marginTop: 8,
+                    marginBottom: 4,
+                    padding: "14px 16px",
+                    background: "#f8fafc",
+                    borderRadius: 8,
+                    border: "1px solid #cbd5e1",
                   }}
                 >
-                  {step.actionLabel}
-                </button>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 10,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                        Student Elective Lock-In Roster ({completedStudents.length} of {lockInStudents.length} Complete)
+                      </div>
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                        Inspect submissions and choose or override elective subtags directly for any student.
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      {pendingStudents.length > 0 && (
+                        <button
+                          onClick={handleAutoLockIn}
+                          disabled={autoLocking}
+                          style={{
+                            padding: "4px 10px",
+                            background: "#fff",
+                            color: "#185FA5",
+                            border: "1px solid #185FA5",
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: autoLocking ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {autoLocking ? "Assigning…" : `⚡ Auto-Fill All Pending (${pendingStudents.length})`}
+                        </button>
+                      )}
+
+                      <div style={{ display: "flex", background: "#e2e8f0", padding: 2, borderRadius: 6 }}>
+                        {[
+                          { key: "all", label: `All (${lockInStudents.length})` },
+                          { key: "pending", label: `Pending (${pendingStudents.length})` },
+                          { key: "complete", label: `Complete (${completedStudents.length})` },
+                        ].map(f => (
+                          <button
+                            key={f.key}
+                            onClick={() => setLockInFilter(f.key)}
+                            style={{
+                              padding: "3px 8px",
+                              border: "none",
+                              borderRadius: 4,
+                              background: lockInFilter === f.key ? "#fff" : "transparent",
+                              color: lockInFilter === f.key ? "#0f172a" : "#64748b",
+                              fontWeight: lockInFilter === f.key ? 700 : 500,
+                              fontSize: 11,
+                              cursor: "pointer",
+                            }}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {autoLockMsg && (
+                    <div
+                      style={{
+                        padding: "6px 10px",
+                        background: "#f0fdf4",
+                        border: "1px solid #bbf7d0",
+                        borderRadius: 6,
+                        fontSize: 11,
+                        color: "#166534",
+                        marginBottom: 10,
+                      }}
+                    >
+                      {autoLockMsg}
+                    </div>
+                  )}
+
+                  {filteredLockInStudents.length === 0 ? (
+                    <div
+                      style={{
+                        padding: "16px 0",
+                        textAlign: "center",
+                        color: "#64748b",
+                        fontSize: 12,
+                        background: "#fff",
+                        borderRadius: 6,
+                        border: "1px solid #e2e8f0",
+                      }}
+                    >
+                      {lockInFilter === "pending"
+                        ? "🎉 All students have completed their elective choices!"
+                        : "No students match this filter."}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        overflowX: "auto",
+                        background: "#fff",
+                        borderRadius: 6,
+                        border: "1px solid #e2e8f0",
+                      }}
+                    >
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #e2e8f0" }}>
+                            <th style={{ textAlign: "left", padding: "6px 10px", color: "#475569" }}>Roll No</th>
+                            <th style={{ textAlign: "left", padding: "6px 10px", color: "#475569" }}>Student Name</th>
+                            <th style={{ textAlign: "center", padding: "6px 10px", color: "#475569" }}>Semester</th>
+                            <th style={{ textAlign: "left", padding: "6px 10px", color: "#475569" }}>Status</th>
+                            <th style={{ textAlign: "left", padding: "6px 10px", color: "#475569" }}>Locked-In Electives</th>
+                            <th style={{ textAlign: "right", padding: "6px 10px", color: "#475569" }}>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredLockInStudents.map(s => {
+                            const hasChoices = Object.keys(s.locked_in || {}).length > 0;
+                            return (
+                              <tr key={s.roll_number} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                <td style={{ padding: "6px 10px", fontWeight: 700 }}>
+                                  <code style={{ background: "#f1efe8", padding: "2px 5px", borderRadius: 3 }}>
+                                    {s.roll_number}
+                                  </code>
+                                </td>
+                                <td style={{ padding: "6px 10px", fontWeight: 500 }}>{s.name}</td>
+                                <td style={{ padding: "6px 10px", textAlign: "center" }}>Sem {s.semester}</td>
+                                <td style={{ padding: "6px 10px" }}>
+                                  {s.is_complete ? (
+                                    <Badge color="green">✓ Complete</Badge>
+                                  ) : (
+                                    <Badge color="amber">
+                                      ⚠ Pending {s.missing_tags?.length > 0 ? `(${s.missing_tags.join(", ")})` : ""}
+                                    </Badge>
+                                  )}
+                                </td>
+                                <td style={{ padding: "6px 10px", color: hasChoices ? "#185FA5" : "#94a3b8" }}>
+                                  {hasChoices ? (
+                                    Object.entries(s.locked_in)
+                                      .map(([t, sub]) => `${t}: ${sub}`)
+                                      .join(" · ")
+                                  ) : (
+                                    <span style={{ fontStyle: "italic" }}>None locked in</span>
+                                  )}
+                                </td>
+                                <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                                  <button
+                                    onClick={() => setOverrideModalStudent(s)}
+                                    style={{
+                                      padding: "3px 8px",
+                                      background: s.is_complete ? "#f1f5f9" : "#185FA5",
+                                      color: s.is_complete ? "#0f172a" : "#fff",
+                                      border: s.is_complete ? "1px solid #cbd5e1" : "none",
+                                      borderRadius: 4,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    {s.is_complete ? "Edit Choices" : "Override Choice →"}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           ))}
         </div>
       </Card>
+
+      {/* Student Lock-In Override Modal */}
+      <StudentLockInOverrideModal
+        student={overrideModalStudent}
+        isOpen={Boolean(overrideModalStudent)}
+        onClose={() => setOverrideModalStudent(null)}
+        onSuccess={() => {
+          if (refreshCycle) refreshCycle();
+        }}
+      />
 
       {/* Quick Action Navigation Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>

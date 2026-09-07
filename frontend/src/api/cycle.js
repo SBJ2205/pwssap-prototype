@@ -12,3 +12,8 @@ export const setCycleChoiceTags = (configs) =>
 // POST /admin/cycle/initialize  →  cycle status object with initialized current_run
 export const initializeCycle = () =>
   client.post("/admin/cycle/initialize").then(r => r.data);
+
+// POST /admin/cycle/auto-lock-in  →  {status, auto_locked_count, cycle}
+export const autoLockInPending = () =>
+  client.post("/admin/cycle/auto-lock-in").then(r => r.data);
+

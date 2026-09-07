@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
 from domain.enums import RunStatus
+from domain.models import StudentChoiceSelection
 
 router = APIRouter(
     prefix="/admin/cycle",
@@ -60,7 +61,26 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
             "subtags": subtags,
         })
 
-    lock_in_complete = sum(1 for s in students if store.has_complete_lock_in(s.roll_number))
+    lock_in_complete = 0
+    students_lock_in = []
+    cb_tags = store.get_choice_based_tags()
+    for s in students:
+        is_complete = store.has_complete_lock_in(s.roll_number)
+        if is_complete:
+            lock_in_complete += 1
+        locked = store.get_lock_in_for_student(s.roll_number)
+        sem_subjects = store.list_subjects(semester=s.semester)
+        applicable_tags = sorted(list({sub.subject_tag for sub in sem_subjects if sub.subject_tag in cb_tags}))
+        missing_tags = [t for t in applicable_tags if not locked.get(t)]
+        students_lock_in.append({
+            "roll_number": s.roll_number,
+            "name": s.name,
+            "semester": s.semester,
+            "is_complete": is_complete,
+            "locked_in": locked,
+            "applicable_tags": applicable_tags,
+            "missing_tags": missing_tags,
+        })
 
     # Find the current (latest) generation run
     latest_run = None
@@ -82,6 +102,7 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
         "tags_detail": tags_detail,
         "lock_in_complete_count": lock_in_complete,
         "lock_in_total_students": len(students),
+        "students_lock_in": students_lock_in,
         "current_run": latest_run,
     }
 
@@ -166,4 +187,39 @@ def initialize_cycle(store: InMemoryStore = Depends(get_store)):
         "semester": run.semester,
         "status": run.status.value,
         "current_run": run_dict,
+    }
+
+
+@router.post("/auto-lock-in")
+def auto_lock_in_pending_students(store: InMemoryStore = Depends(get_store)):
+    """Auto-assign available elective choices for all incomplete students using the first available subtag per tag."""
+    cb_tags = store.get_choice_based_tags()
+    subjects = list(store.subjects.values())
+    count = 0
+    for s in store.students.values():
+        if store.has_complete_lock_in(s.roll_number):
+            continue
+        sem_subs = [sub for sub in subjects if sub.semester == s.semester and sub.subject_tag in cb_tags]
+        tag_subtags = {}
+        for sub in sem_subs:
+            if sub.subtag:
+                tag_subtags.setdefault(sub.subject_tag, set()).add(sub.subtag)
+
+        choices = {}
+        for tag, subtags in tag_subtags.items():
+            if subtags:
+                choices[tag] = sorted(list(subtags))[0]
+
+        if choices:
+            selections = [
+                StudentChoiceSelection(roll_number=s.roll_number, tag=tag, subtag=subtag)
+                for tag, subtag in choices.items()
+            ]
+            store.set_student_choice_selections(s.roll_number, selections)
+            count += 1
+
+    return {
+        "status": "completed",
+        "auto_locked_count": count,
+        "cycle": _get_cycle_status_dict(store),
     }
