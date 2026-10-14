@@ -13,6 +13,7 @@ Routes:
       Auto-creates or refreshes the generation run covering all active
       semesters in the subject catalog.
 """
+import random
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -192,7 +193,7 @@ def initialize_cycle(store: InMemoryStore = Depends(get_store)):
 
 @router.post("/auto-lock-in")
 def auto_lock_in_pending_students(store: InMemoryStore = Depends(get_store)):
-    """Auto-assign available elective choices for all incomplete students using the first available subtag per tag."""
+    """Auto-assign a random available elective choice per tag to pending students."""
     cb_tags = store.get_choice_based_tags()
     subjects = list(store.subjects.values())
     count = 0
@@ -208,7 +209,7 @@ def auto_lock_in_pending_students(store: InMemoryStore = Depends(get_store)):
         choices = {}
         for tag, subtags in tag_subtags.items():
             if subtags:
-                choices[tag] = sorted(list(subtags))[0]
+                choices[tag] = random.choice(sorted(subtags))
 
         if choices:
             selections = [

@@ -46,8 +46,14 @@ export const getStudents = (semester) => {
   return client.get("/students", { params }).then(r => r.data);
 };
 
+// DELETE /admin/students — clears the roster and dependent schedules.
+export const clearStudents = () => client.delete("/admin/students").then(r => r.data);
+
 // GET /teachers  →  [{teacher_id, teacher_name}]
 export const getTeachers = () => client.get("/teachers").then(r => r.data);
+
+// DELETE /admin/teachers — clears teachers and dependent schedules.
+export const clearTeachers = () => client.delete("/admin/teachers").then(r => r.data);
 
 // GET /timeslots  →  [{key, day, slot_index, start_time, end_time, allowed_types, allows_theory, allows_lab}]
 export const getTimeslots = () =>

@@ -41,6 +41,13 @@ def list_students(semester: Optional[int] = None, store: InMemoryStore = Depends
     return [_student_to_dict(s) for s in store.list_students(semester)]
 
 
+@router.delete("/admin/students", dependencies=[Depends(require_admin)])
+def clear_student_roster(store: InMemoryStore = Depends(get_store)):
+    """Clear the roster and schedules generated from it."""
+    cleared_count = store.clear_students()
+    return {"status": "cleared", "cleared_count": cleared_count}
+
+
 @router.post("/admin/students/import", dependencies=[Depends(require_admin)])
 async def import_students(
     run_id: Optional[int] = None,

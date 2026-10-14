@@ -239,6 +239,33 @@ class InMemoryStore:
         self.student_time_preferences.pop(roll_number, None)
         self.student_faculty_preferences.pop(roll_number, None)
 
+    def clear_students(self) -> int:
+        """Clear students and invalidate schedules built from the roster."""
+        count = len(self.students)
+        self.students.clear()
+        self.student_choice_selections.clear()
+        self.student_time_preferences.clear()
+        self.student_faculty_preferences.clear()
+        self.student_section_assignments.clear()
+        self.sections.clear()
+        self.runs.clear()
+        self._next_section_id = 1
+        self._next_run_id = 1
+        return count
+
+    def clear_teachers(self) -> int:
+        """Clear teachers and invalidate schedules using teacher assignments."""
+        count = len(self.teachers)
+        self.teachers.clear()
+        self.teacher_capabilities.clear()
+        self.teacher_availability.clear()
+        self.sections.clear()
+        self.runs.clear()
+        self.student_section_assignments.clear()
+        self._next_section_id = 1
+        self._next_run_id = 1
+        return count
+
     # ── Student time-slot preferences ────────────────────────────────────
     def get_time_preferences(self, roll_number: str) -> Dict[str, int]:
         return dict(self.student_time_preferences.get(roll_number, {}))

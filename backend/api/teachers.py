@@ -26,6 +26,13 @@ def list_teachers(store: InMemoryStore = Depends(get_store)):
     return [_teacher_to_dict(t) for t in store.list_teachers()]
 
 
+@router.delete("/admin/teachers", dependencies=[Depends(require_admin)])
+def clear_teacher_roster(store: InMemoryStore = Depends(get_store)):
+    """Clear teachers and schedules generated with their assignments."""
+    cleared_count = store.clear_teachers()
+    return {"status": "cleared", "cleared_count": cleared_count}
+
+
 @router.get("/admin/teachers/{teacher_id}/capabilities", dependencies=[Depends(require_admin)])
 def get_teacher_capabilities(teacher_id: str, store: InMemoryStore = Depends(get_store)):
     if store.get_teacher(teacher_id) is None:

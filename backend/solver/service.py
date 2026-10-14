@@ -163,6 +163,49 @@ def run_solver_for_run(
                         enrolled.append(student.roll_number)
         subject_students[subject.subject_code] = enrolled
 
+    # Explain common structural infeasibility before CP-SAT returns only its
+    # generic status. These checks are diagnostics; the solver remains final.
+    sections_by_subject: Dict[str, List[Section]] = {}
+    for section in sections:
+        sections_by_subject.setdefault(section.subject_code, []).append(section)
+
+    for subject in semester_subjects:
+        subject_sections = sections_by_subject.get(subject.subject_code, [])
+        demand = len(subject_students.get(subject.subject_code, []))
+        total_capacity = sum(section.capacity for section in subject_sections)
+        if demand > total_capacity:
+            pre_warnings.append(
+                f"{subject.subject_code} has {demand} eligible student(s), "
+                f"but generated sections provide only {total_capacity} seat(s). "
+                "Increase capacity or generate more sections."
+            )
+        if demand > 0 and not subject_sections:
+            pre_warnings.append(
+                f"{subject.subject_code} has {demand} eligible student(s) but no generated sections."
+            )
+
+        capable_teachers = store.teachers_for_subject(subject.subject_code)
+        declared_loads = [
+            store.teacher_subject_load(teacher_id, subject.subject_code)
+            for teacher_id in capable_teachers
+        ]
+        if declared_loads and all(load is not None for load in declared_loads):
+            available_hours = sum(load or 0 for load in declared_loads)
+            required_hours = len(subject_sections) * subject.weekly_hours
+            if available_hours < required_hours:
+                pre_warnings.append(
+                    f"{subject.subject_code} requires {required_hours} teacher-hour(s) "
+                    f"for {len(subject_sections)} section(s), but declared teacher loads "
+                    f"provide only {available_hours}. Increase a subject load or add a capable teacher."
+                )
+            if subject_sections and not any(
+                (load or 0) >= subject.weekly_hours for load in declared_loads
+            ):
+                pre_warnings.append(
+                    f"No capable teacher has enough declared weekly load to teach one complete "
+                    f"{subject.weekly_hours}-hour section of {subject.subject_code}."
+                )
+
     inp = SolverInput(
         sections=sections,
         candidate_slots=candidate_slots,

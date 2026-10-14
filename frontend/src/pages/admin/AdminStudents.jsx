@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import {
   getStudents,
+  clearStudents,
   importStudents,
   getStudentLockIn,
   getStudentEnrolledSubjects,
@@ -100,6 +101,21 @@ export default function AdminStudents({
     }
   }
 
+  async function handleClearStudents() {
+    if (!window.confirm("Clear every student? This also removes preferences, lock-ins, assignments, generated sections, and solver cycles. Subjects and teachers will remain.")) return;
+    setError(null);
+    setUploadSuccess(null);
+    try {
+      const result = await clearStudents();
+      setStudents([]);
+      setInspectStudent(null);
+      setUploadSuccess(`Cleared ${result.cleared_count} student(s). Upload the replacement roster to continue.`);
+      if (reload) reload();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    }
+  }
+
   // Load preferences, lock-in, and enrolled subjects when inspecting a student
   async function openStudentInspector(student) {
     setInspectStudent(student);
@@ -169,6 +185,14 @@ export default function AdminStudents({
               </code>
             </div>
           </div>
+
+          <button
+            onClick={handleClearStudents}
+            disabled={uploading || students.length === 0}
+            style={{ padding: "6px 12px", background: uploading || students.length === 0 ? "#eee" : "#FCEBEB", color: uploading || students.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || students.length === 0 ? "not-allowed" : "pointer" }}
+          >
+            Clear All Students
+          </button>
 
           <button
             onClick={() => {
@@ -257,7 +281,7 @@ export default function AdminStudents({
             <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6 }}>
               CSV Preview (Showing first {previewData.rows.length} of {previewData.totalRows} data rows):
             </div>
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ maxHeight: 420, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, background: "#faf9f6" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid #ddd" }}>

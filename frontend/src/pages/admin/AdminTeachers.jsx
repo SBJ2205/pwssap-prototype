@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { getTeachers, getSubjects, importTeachers, getTeacherCapabilities } from "../../api/catalog";
+import { clearTeachers, getTeachers, getSubjects, importTeachers, getTeacherCapabilities } from "../../api/catalog";
 import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
 import { downloadCsv, parseCsvText, TEACHER_CSV_TEMPLATE } from "../../utils/csv";
 import { td } from "../../constants";
@@ -106,6 +106,22 @@ export default function AdminTeachers({ reload }) {
     }
   }
 
+  async function handleClearTeachers() {
+    if (!window.confirm("Clear every teacher? This also removes capabilities, availability, teacher assignments, generated sections, and solver cycles. Subjects and students will remain.")) return;
+    setError(null);
+    setUploadSuccess(null);
+    try {
+      const result = await clearTeachers();
+      setTeachers([]);
+      setCapabilities({});
+      setSubjectLoads({});
+      setUploadSuccess(`Cleared ${result.cleared_count} teacher(s). Upload the replacement roster to continue.`);
+      if (reload) reload();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    }
+  }
+
   const subjectMap = useMemo(() => {
     return Object.fromEntries(subjects.map(s => [s.subject_code, s]));
   }, [subjects]);
@@ -163,6 +179,14 @@ export default function AdminTeachers({ reload }) {
               Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, ...</code>
             </div>
           </div>
+
+          <button
+            onClick={handleClearTeachers}
+            disabled={uploading || teachers.length === 0}
+            style={{ padding: "6px 12px", background: uploading || teachers.length === 0 ? "#eee" : "#FCEBEB", color: uploading || teachers.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || teachers.length === 0 ? "not-allowed" : "pointer" }}
+          >
+            Clear All Teachers
+          </button>
 
           <button
             onClick={() => downloadCsv("teachers_template.csv", TEACHER_CSV_TEMPLATE)}

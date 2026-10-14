@@ -427,15 +427,18 @@ export default function AdminSolver({
                 </span>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 15, color: "#222" }}>
-                    Solution Found: {solveResult.status}
+                    Solver Result: {solveResult.status}
                   </div>
                   <div style={{ fontSize: 12, color: "#666" }}>
-                    Run status: <strong>{solveResult.run_status}</strong> (Results are now live).
+                    Run status: <strong>{solveResult.run_status}</strong>
+                    {solveResult.status === "OPTIMAL" || solveResult.status === "FEASIBLE"
+                      ? " (Results are now live)."
+                      : " (No timetable was published)."}
                   </div>
                 </div>
               </div>
 
-              {setPage && (
+              {setPage && (solveResult.status === "OPTIMAL" || solveResult.status === "FEASIBLE") && (
                 <button
                   onClick={() => setPage("admin-timetable")}
                   style={{
