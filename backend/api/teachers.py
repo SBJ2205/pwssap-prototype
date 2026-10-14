@@ -30,7 +30,15 @@ def list_teachers(store: InMemoryStore = Depends(get_store)):
 def get_teacher_capabilities(teacher_id: str, store: InMemoryStore = Depends(get_store)):
     if store.get_teacher(teacher_id) is None:
         raise HTTPException(status_code=404, detail="Teacher not found")
-    return {"teacher_id": teacher_id, "subject_codes": store.capabilities_for_teacher(teacher_id)}
+    subject_codes = store.capabilities_for_teacher(teacher_id)
+    return {
+        "teacher_id": teacher_id,
+        "subject_codes": subject_codes,
+        "subject_loads": {
+            code: store.teacher_subject_load(teacher_id, code)
+            for code in subject_codes
+        },
+    }
 
 
 @router.get("/admin/subjects/{subject_code}/teachers", dependencies=[Depends(require_admin)])
@@ -68,14 +76,18 @@ async def import_teachers(file: UploadFile = File(...), store: InMemoryStore = D
     for teacher in result.teachers:
         store.upsert_teacher(teacher)
     for teacher_id, subject_codes in result.capabilities.items():
-        for code in subject_codes:
-            store.add_teacher_capability(teacher_id, code)
+        subject_loads = {
+            code: result.loads.get(teacher_id, {}).get(code)
+            for code in subject_codes
+        }
+        store.replace_teacher_capabilities(teacher_id, subject_loads)
 
     total_capabilities = sum(len(codes) for codes in result.capabilities.values())
     return {
         "status": "imported",
         "count": len(result.teachers),
         "capabilities": total_capabilities,
+        "loads": result.loads,
     }
 
 

@@ -9,6 +9,7 @@ export default function AdminTeachers({ reload }) {
   const [teachers, setTeachers] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [capabilities, setCapabilities] = useState({}); // { [teacherId]: [subjectCode, ...] }
+  const [subjectLoads, setSubjectLoads] = useState({}); // { [teacherId]: { [subjectCode]: maxHours } }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -36,17 +37,20 @@ export default function AdminTeachers({ reload }) {
 
       // Fetch capabilities for each teacher
       const caps = {};
+      const loads = {};
       await Promise.all(
         (tData || []).map(async t => {
           try {
             const res = await getTeacherCapabilities(t.teacher_id);
             caps[t.teacher_id] = res.subject_codes || [];
+            loads[t.teacher_id] = res.subject_loads || {};
           } catch {
             caps[t.teacher_id] = [];
           }
         })
       );
       setCapabilities(caps);
+      setSubjectLoads(loads);
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
@@ -156,7 +160,7 @@ export default function AdminTeachers({ reload }) {
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>Import Teachers via CSV</div>
             <div style={{ fontSize: 12, color: "#777" }}>
-              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name, subject_1, subject_2, ...</code>
+              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, ...</code>
             </div>
           </div>
 
@@ -328,6 +332,7 @@ export default function AdminTeachers({ reload }) {
               <tbody>
                 {filteredTeachers.map(t => {
                   const caps = capabilities[t.teacher_id] || [];
+                  const loads = subjectLoads[t.teacher_id] || {};
                   return (
                     <tr key={t.teacher_id} style={{ borderBottom: "1px solid #f0efeb" }}>
                       <td style={{ ...td, fontWeight: 700 }}>
@@ -362,6 +367,7 @@ export default function AdminTeachers({ reload }) {
                                   }}
                                 >
                                   <strong>{code}</strong>
+                                  {loads[code] != null && <span style={{ color: "#185FA5", fontWeight: 600 }}>max {loads[code]}h/wk</span>}
                                   {s && <span style={{ color: "#666" }}>{s.subject_name}</span>}
                                 </span>
                               );

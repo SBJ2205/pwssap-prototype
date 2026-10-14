@@ -62,12 +62,12 @@ IT310,Cyber Security Intro,MDM,IT310_CS,3,theory,3,30,
 IT311,Probabilistic Graphical Models,PE1,AIML|DS,5,theory,4,72,
 `;
 
-export const TEACHER_CSV_TEMPLATE = `teacher_id,teacher_name,subject_1,subject_2,subject_3,subject_4
-T001,Dr. A. Sharma,IT301,IT302,IT303,IT304
-T002,Prof. B. Verma,IT301,IT305,IT306,IT307
-T003,Dr. C. Iyer,IT302,IT305,IT308,IT309
-T004,Prof. D. Kulkarni,IT303,IT304,IT306,IT310
-T005,Dr. E. Deshmukh,IT307,IT308,IT309,IT310
+export const TEACHER_CSV_TEMPLATE = `teacher_id,teacher_name,subject_1,subject_1_load,subject_2,subject_2_load,subject_3,subject_3_load,subject_4,subject_4_load
+T001,Dr. A. Sharma,IT301,6,IT302,4,IT303,4,IT304,2
+T002,Prof. B. Verma,IT301,4,IT305,6,IT306,4,IT307,4
+T003,Dr. C. Iyer,IT302,4,IT305,4,IT308,4,IT309,3
+T004,Prof. D. Kulkarni,IT303,4,IT304,2,IT306,4,IT310,3
+T005,Dr. E. Deshmukh,IT307,4,IT308,4,IT309,3,IT310,3
 `;
 
 export const STUDENT_CSV_TEMPLATE = `roll_number,name,semester

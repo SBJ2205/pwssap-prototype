@@ -160,13 +160,36 @@ class InMemoryStore:
         self.teachers[teacher.teacher_id] = teacher
         return teacher
 
-    def add_teacher_capability(self, teacher_id: str, subject_code: str) -> None:
-        exists = any(
-            c.teacher_id == teacher_id and c.subject_code == subject_code
-            for c in self.teacher_capabilities
+    def add_teacher_capability(
+        self, teacher_id: str, subject_code: str, maximum_weekly_hours: Optional[int] = None
+    ) -> None:
+        existing = next(
+            (c for c in self.teacher_capabilities
+             if c.teacher_id == teacher_id and c.subject_code == subject_code),
+            None,
         )
-        if not exists:
-            self.teacher_capabilities.append(TeacherSubjectCapability(teacher_id, subject_code))
+        if existing is not None:
+            existing.maximum_weekly_hours = maximum_weekly_hours
+            return
+        self.teacher_capabilities.append(
+            TeacherSubjectCapability(teacher_id, subject_code, maximum_weekly_hours)
+        )
+
+    def replace_teacher_capabilities(
+        self, teacher_id: str, subject_loads: Dict[str, Optional[int]]
+    ) -> None:
+        self.teacher_capabilities = [
+            capability for capability in self.teacher_capabilities
+            if capability.teacher_id != teacher_id
+        ]
+        for subject_code, maximum in subject_loads.items():
+            self.add_teacher_capability(teacher_id, subject_code, maximum)
+
+    def teacher_subject_load(self, teacher_id: str, subject_code: str) -> Optional[int]:
+        for capability in self.teacher_capabilities:
+            if capability.teacher_id == teacher_id and capability.subject_code == subject_code:
+                return capability.maximum_weekly_hours
+        return None
 
     def capabilities_for_teacher(self, teacher_id: str) -> List[str]:
         return [c.subject_code for c in self.teacher_capabilities if c.teacher_id == teacher_id]

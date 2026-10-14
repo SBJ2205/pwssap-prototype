@@ -12,9 +12,9 @@ This is why plain csv.reader (ragged rows) is used here instead of
 csv.DictReader (fixed field names) — see subjects_csv.py/students_csv.py
 for the fixed-column style used elsewhere.
 
-Teachers carry no department metadata and no preferred-slot selections
-in this version (product decision #8) — a capability is purely "this
-teacher CAN teach this subject", nothing about when or how much.
+Teachers carry no department metadata and no preferred-slot selections.
+Each explicit subject-load pair also declares the maximum weekly hours the
+teacher may teach for that subject.
 """
 import csv
 import io
@@ -37,6 +37,7 @@ class RowError:
 class TeacherCsvResult:
     teachers: List[Teacher] = field(default_factory=list)
     capabilities: Dict[str, List[str]] = field(default_factory=dict)  # teacher_id -> [subject_code, ...]
+    loads: Dict[str, Dict[str, int]] = field(default_factory=dict)  # teacher_id -> subject_code -> max hours
     row_errors: List[RowError] = field(default_factory=list)
 
     @property
@@ -64,6 +65,7 @@ def parse_teachers_csv(
 
     teachers: List[Teacher] = []
     capabilities: Dict[str, List[str]] = {}
+    loads: Dict[str, Dict[str, int]] = {}
     row_errors: List[RowError] = []
     seen_ids: Dict[str, int] = {}
 
@@ -75,7 +77,37 @@ def parse_teachers_csv(
         teacher_id = row[0].strip() if len(row) > 0 else ""
         teacher_name = row[1].strip() if len(row) > 1 else ""
         subject_cells = row[2:]
-        subject_codes = [c.strip() for c in subject_cells if c.strip()]
+        header_cells = header[2:]
+        parsed_pairs: List[tuple[str, Optional[int]]] = []
+        pair_format = any(cell.endswith("_load") for cell in header_cells)
+
+        if pair_format:
+            for index, cell in enumerate(subject_cells):
+                if index >= len(header_cells) or header_cells[index].endswith("_load"):
+                    continue
+                code = cell.strip()
+                load_index = index + 1
+                raw_load = subject_cells[load_index].strip() if load_index < len(subject_cells) else ""
+                if not code and not raw_load:
+                    continue
+                if code and not raw_load:
+                    errors.append(f"Missing load for subject_code '{code}'.")
+                    continue
+                if not code and raw_load:
+                    errors.append("A subject load cannot be provided without a subject_code.")
+                    continue
+                try:
+                    load = int(raw_load)
+                    if load <= 0:
+                        raise ValueError
+                except ValueError:
+                    errors.append(f"Load for subject_code '{code}' must be a positive whole number.")
+                    continue
+                parsed_pairs.append((code, load))
+        else:
+            parsed_pairs = [(c.strip(), None) for c in subject_cells if c.strip()]
+
+        subject_codes = [code for code, _ in parsed_pairs]
 
         if teacher_id and teacher_id in seen_ids:
             errors.append(
@@ -83,11 +115,14 @@ def parse_teachers_csv(
             )
 
         deduped_codes: List[str] = []
-        for code in subject_codes:
+        teacher_loads: Dict[str, int] = {}
+        for code, load in parsed_pairs:
             if code in deduped_codes:
                 errors.append(f"Duplicate subject_code '{code}' for this teacher.")
                 continue
             deduped_codes.append(code)
+            if load is not None:
+                teacher_loads[code] = load
 
         if known_subject_codes is not None:
             unknown = [c for c in deduped_codes if c not in known_subject_codes]
@@ -104,5 +139,6 @@ def parse_teachers_csv(
         seen_ids[teacher_id] = row_number
         teachers.append(teacher)
         capabilities[teacher_id] = deduped_codes
+        loads[teacher_id] = teacher_loads
 
-    return TeacherCsvResult(teachers=teachers, capabilities=capabilities, row_errors=row_errors)
+    return TeacherCsvResult(teachers=teachers, capabilities=capabilities, loads=loads, row_errors=row_errors)

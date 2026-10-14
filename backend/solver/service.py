@@ -88,6 +88,11 @@ def run_solver_for_run(
         section.id: store.teachers_for_subject(section.subject_code)
         for section in sections
     }
+    teacher_subject_loads: Dict[tuple[str, str], Optional[int]] = {
+        (teacher_id, subject_code): store.teacher_subject_load(teacher_id, subject_code)
+        for subject_code in {section.subject_code for section in sections}
+        for teacher_id in store.teachers_for_subject(subject_code)
+    }
 
     # Pre-feasibility checks for warnings.
     pre_warnings: List[str] = []
@@ -165,6 +170,7 @@ def run_solver_for_run(
         time_preferences=time_preferences,
         faculty_preferences=faculty_preferences,
         teacher_availability=teacher_availability,
+        teacher_subject_loads=teacher_subject_loads,
         subject_students=subject_students,
         time_limit_seconds=time_limit_seconds,
     )

@@ -68,6 +68,7 @@ class TeacherSubjectCapability:
     of teaching subject_code."""
     teacher_id: str
     subject_code: str
+    maximum_weekly_hours: Optional[int] = None
 
 
 @dataclass

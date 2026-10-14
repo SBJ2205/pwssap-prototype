@@ -76,6 +76,7 @@ class SolverInput:
     faculty_preferences: Dict[str, Dict[str, Dict[str, int]]]
     teacher_availability: Dict[str, Dict[str, bool]]
     subject_students: Dict[str, List[str]]
+    teacher_subject_loads: Dict[Tuple[str, str], Optional[int]] = field(default_factory=dict)
     time_limit_seconds: float = 30.0
 
 
@@ -288,6 +289,28 @@ def solve(inp: SolverInput) -> SolverResult:
                 enrolled_rvars.append(avar)
         if enrolled_rvars:
             model.add(sum(enrolled_rvars) <= section.capacity)
+
+    # (f) Hard teacher-subject weekly load limits from the teacher CSV.
+    # A missing limit is legacy/unlimited; imported subject-load pairs are
+    # enforced against the real weekly hours of each assigned section.
+    for teacher_id in all_teacher_ids:
+        for subject_code in subject_sections:
+            maximum = inp.teacher_subject_loads.get((teacher_id, subject_code))
+            if maximum is None:
+                continue
+            terms = []
+            for section in sections:
+                if section.subject_code != subject_code:
+                    continue
+                subject_hours = sum(
+                    getattr(meeting, "duration_hours", 2) or 2
+                    for meeting in section.meetings
+                )
+                for ti, candidate_teacher in enumerate(inp.candidate_teachers.get(section.id, [])):
+                    if candidate_teacher == teacher_id and teacher_vars[section.id]:
+                        terms.append(subject_hours * teacher_vars[section.id][ti])
+            if terms:
+                model.add(sum(terms) <= maximum)
 
     # (f) Student BLOCKED slots
     blocked_value = PreferenceRating.BLOCKED.value
