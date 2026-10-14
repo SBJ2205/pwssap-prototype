@@ -207,6 +207,19 @@ def run_solver_for_run(
                     f"{subject.weekly_hours}-hour section of {subject.subject_code}."
                 )
 
+    subject_semesters: Dict[str, int] = {
+        subj.subject_code: subj.semester for subj in semester_subjects
+    }
+    subject_tags: Dict[str, str] = {
+        subj.subject_code: subj.subject_tag for subj in semester_subjects
+    }
+    subject_types: Dict[str, str] = {
+        subj.subject_code: subj.type.value for subj in semester_subjects
+    }
+    subject_subtags: Dict[str, List[str]] = {
+        subj.subject_code: list(subj.supported_subtags) for subj in semester_subjects
+    }
+
     inp = SolverInput(
         sections=sections,
         candidate_slots=candidate_slots,
@@ -216,6 +229,10 @@ def run_solver_for_run(
         teacher_availability=teacher_availability,
         teacher_subject_loads=teacher_subject_loads,
         subject_students=subject_students,
+        subject_semesters=subject_semesters,
+        subject_tags=subject_tags,
+        subject_types=subject_types,
+        subject_subtags=subject_subtags,
         feasibility_only=feasibility_only,
         time_limit_seconds=time_limit_seconds,
     )

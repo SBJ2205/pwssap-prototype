@@ -321,24 +321,37 @@ def _generate_lab_sections(
             ))
             teacher_avail = {}
 
-        # Pick a slot for this lab section (single meeting).
-        slot = _pick_slot(
-            valid_slots, assigned_teacher, teacher_avail,
-            teacher_used_slots.get(assigned_teacher, set()) if assigned_teacher else set(),
-            set(),  # parallel lab sections CAN share the same wall-clock slot (different groups)
-        )
+        # Split weekly_hours > 2 into 2-hour meetings (and 1-hour remainder if odd)
+        try:
+            meeting_hours_list = parse_slot_structure(subject.slot_structure, subject.weekly_hours)
+        except SlotStructureError:
+            num_2s = subject.weekly_hours // 2
+            rem = subject.weekly_hours % 2
+            meeting_hours_list = [2] * num_2s + ([1] if rem else [])
+        if not meeting_hours_list:
+            meeting_hours_list = [min(subject.weekly_hours, 2)]
 
-        if slot is None:
-            warnings.append(SectionGenerationWarning(
-                subject_code=subject.subject_code,
-                message=f"No valid slot found for lab section '{label}'. slot_key=None.",
-            ))
-            meeting_slot_key = ""
-        else:
-            meeting_slot_key = slot.key
-            if assigned_teacher:
-                teacher_used_slots.setdefault(assigned_teacher, set()).add(slot.key)
-                teacher_section_counts[assigned_teacher] = teacher_section_counts.get(assigned_teacher, 0) + 1
+        meetings: List[Meeting] = []
+        for duration in meeting_hours_list:
+            slot = _pick_slot(
+                valid_slots, assigned_teacher, teacher_avail,
+                teacher_used_slots.get(assigned_teacher, set()) if assigned_teacher else set(),
+                set(),  # parallel lab sections CAN share the same wall-clock slot (different groups)
+            )
+            slot_part = 1 if duration == 1 else None
+            if slot is None:
+                warnings.append(SectionGenerationWarning(
+                    subject_code=subject.subject_code,
+                    message=f"No valid slot found for one meeting of lab section '{label}'. slot_key=None.",
+                ))
+                meetings.append(Meeting(slot_key="", duration_hours=duration, slot_part=slot_part))
+            else:
+                meetings.append(Meeting(slot_key=slot.key, duration_hours=duration, slot_part=slot_part))
+                if assigned_teacher:
+                    teacher_used_slots.setdefault(assigned_teacher, set()).add(slot.key)
+
+        if assigned_teacher:
+            teacher_section_counts[assigned_teacher] = teacher_section_counts.get(assigned_teacher, 0) + 1
 
         section = Section(
             id=section_id_start + n - 1,
@@ -346,7 +359,7 @@ def _generate_lab_sections(
             label=label,
             teacher_id=assigned_teacher,
             capacity=subject.capacity,
-            meetings=[Meeting(slot_key=meeting_slot_key, duration_hours=min(subject.weekly_hours, 2), slot_part=None)],
+            meetings=meetings,
             run_id=run_id,
         )
         result.sections.append(section)

@@ -36,7 +36,9 @@ Hard constraints:
 """
 from __future__ import annotations
 
+import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -77,6 +79,10 @@ class SolverInput:
     teacher_availability: Dict[str, Dict[str, bool]]
     subject_students: Dict[str, List[str]]
     teacher_subject_loads: Dict[Tuple[str, str], Optional[int]] = field(default_factory=dict)
+    subject_semesters: Dict[str, int] = field(default_factory=dict)
+    subject_tags: Dict[str, str] = field(default_factory=dict)
+    subject_types: Dict[str, str] = field(default_factory=dict)
+    subject_subtags: Dict[str, List[str]] = field(default_factory=dict)
     feasibility_only: bool = False
     time_limit_seconds: float = 30.0
 
@@ -95,7 +101,6 @@ class SolverResult:
 
 
 def solve(inp: SolverInput) -> SolverResult:
-    model = cp_model.CpModel()
     sections = inp.sections
     section_by_id: Dict[int, Section] = {s.id: s for s in sections if s.id is not None}
 
@@ -105,21 +110,25 @@ def solve(inp: SolverInput) -> SolverResult:
         for tid in tids
     })
 
-    # ── Decision variables ────────────────────────────────────────────────
+    subject_sections: Dict[str, List[int]] = {}
+    for section in sections:
+        subject_sections.setdefault(section.subject_code, []).append(section.id)
 
-    # slot_vars:
-    # For 2-hour meetings: slot_vars[sid][mi][ci] = 1 if placed in candidate slot ci (full 2h)
-    # For 1-hour meetings:
-    #   slot_vars_p1[sid][mi][ci] = 1 if placed in candidate slot ci, Part 1 (first hour)
-    #   slot_vars_p2[sid][mi][ci] = 1 if placed in candidate slot ci, Part 2 (second hour)
+    total_t0 = time.monotonic()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 1: Automated Master Timetable Generation (Sections + Slots + Faculty)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    m1 = cp_model.CpModel()
+
+    # Decision variables for meeting slots:
+    # 2h meetings: slot_vars_2h[sid][mi][ci]
+    # 1h meetings: slot_vars_p1[sid][mi][ci] and slot_vars_p2[sid][mi][ci]
     slot_vars_2h: Dict[int, Dict[int, List[cp_model.IntVar]]] = {}
     slot_vars_p1: Dict[int, Dict[int, List[cp_model.IntVar]]] = {}
     slot_vars_p2: Dict[int, Dict[int, List[cp_model.IntVar]]] = {}
-
-    # slot_active_in[sid][mi][ci] = bool var representing meeting mi is in physical slot ci
     slot_active_in: Dict[int, Dict[int, List[cp_model.IntVar]]] = {}
-
-    # period_active: (sid, mi, ci, part) -> bool var where part in (1, 2)
     period_active: Dict[Tuple[int, int, int, int], cp_model.IntVar] = {}
 
     for section in sections:
@@ -132,78 +141,42 @@ def solve(inp: SolverInput) -> SolverResult:
             dur = getattr(m, "duration_hours", 2) or 2
 
             if dur == 1:
-                # 1-hour remainder: choice between Part 1 or Part 2 across candidate slots
-                slot_vars_p1.setdefault(sid, {})[mi] = [
-                    model.new_bool_var(f"s{sid}_m{mi}_c{ci}_p1")
-                    for ci in range(len(cand_s))
-                ]
-                slot_vars_p2.setdefault(sid, {})[mi] = [
-                    model.new_bool_var(f"s{sid}_m{mi}_c{ci}_p2")
-                    for ci in range(len(cand_s))
-                ]
-                p1_vars = slot_vars_p1[sid][mi]
-                p2_vars = slot_vars_p2[sid][mi]
+                p1_vars = [m1.new_bool_var(f"s{sid}_m{mi}_c{ci}_p1") for ci in range(len(cand_s))]
+                p2_vars = [m1.new_bool_var(f"s{sid}_m{mi}_c{ci}_p2") for ci in range(len(cand_s))]
+                slot_vars_p1.setdefault(sid, {})[mi] = p1_vars
+                slot_vars_p2.setdefault(sid, {})[mi] = p2_vars
 
-                # Exactly one (slot, part) selection
-                model.add_exactly_one(p1_vars + p2_vars)
+                m1.add_exactly_one(p1_vars + p2_vars)
 
                 for ci in range(len(cand_s)):
                     period_active[(sid, mi, ci, 1)] = p1_vars[ci]
                     period_active[(sid, mi, ci, 2)] = p2_vars[ci]
-
-                    # slot_active is p1 OR p2
-                    s_act = model.new_bool_var(f"s_act_s{sid}_m{mi}_c{ci}")
-                    model.add(s_act == p1_vars[ci] + p2_vars[ci])
+                    s_act = m1.new_bool_var(f"s_act_s{sid}_m{mi}_c{ci}")
+                    m1.add(s_act == p1_vars[ci] + p2_vars[ci])
                     slot_active_in[sid][mi].append(s_act)
             else:
-                # 2-hour meeting: placed in candidate slot ci, spans both Part 1 and Part 2
-                vars_2h = [
-                    model.new_bool_var(f"s{sid}_m{mi}_c{ci}_2h")
-                    for ci in range(len(cand_s))
-                ]
+                vars_2h = [m1.new_bool_var(f"s{sid}_m{mi}_c{ci}_2h") for ci in range(len(cand_s))]
                 slot_vars_2h.setdefault(sid, {})[mi] = vars_2h
-                model.add_exactly_one(vars_2h)
+                m1.add_exactly_one(vars_2h)
 
                 for ci in range(len(cand_s)):
                     period_active[(sid, mi, ci, 1)] = vars_2h[ci]
                     period_active[(sid, mi, ci, 2)] = vars_2h[ci]
                     slot_active_in[sid][mi].append(vars_2h[ci])
 
-    # teacher_vars[sid][ti] = 1 if teacher ti assigned to section sid
+    # Teacher assignment variables
     teacher_vars: Dict[int, List[cp_model.IntVar]] = {}
     for section in sections:
         sid = section.id
         cand_t = inp.candidate_teachers.get(sid, [])
         if cand_t:
-            tvars = [
-                model.new_bool_var(f"teacher_s{sid}_t{ti}")
-                for ti in range(len(cand_t))
-            ]
-            model.add_exactly_one(tvars)
+            tvars = [m1.new_bool_var(f"teacher_s{sid}_t{ti}") for ti in range(len(cand_t))]
+            m1.add_exactly_one(tvars)
         else:
             tvars = []
         teacher_vars[sid] = tvars
 
-    # student_vars[roll][subject_code][sid] = 1 if student enrolled in section sid
-    student_vars: Dict[str, Dict[str, Dict[int, cp_model.IntVar]]] = {}
-    subject_sections: Dict[str, List[int]] = {}
-    for section in sections:
-        subject_sections.setdefault(section.subject_code, []).append(section.id)
-
-    for subject_code, sids in subject_sections.items():
-        for roll in inp.subject_students.get(subject_code, []):
-            student_vars.setdefault(roll, {}).setdefault(subject_code, {})
-            sec_avars = [
-                model.new_bool_var(f"enroll_r{roll}_sub{subject_code}_s{sid}")
-                for sid in sids
-            ]
-            model.add_exactly_one(sec_avars)
-            for sid, avar in zip(sids, sec_avars):
-                student_vars[roll][subject_code][sid] = avar
-
-    # ── Hard Constraints ──────────────────────────────────────────────────
-
-    # (a) Teacher availability
+    # 1.a Teacher availability
     for section in sections:
         sid = section.id
         cand_t = inp.candidate_teachers.get(sid, [])
@@ -216,11 +189,10 @@ def solve(inp: SolverInput) -> SolverResult:
             for mi in range(len(section.meetings)):
                 for ci, slot in enumerate(cand_s):
                     if not avail_map.get(slot.key, True):
-                        # Teacher T and slot ci cannot both be selected
                         s_act = slot_active_in[sid][mi][ci]
-                        model.add(tv + s_act <= 1)
+                        m1.add(tv + s_act <= 1)
 
-    # (b) Teacher no-clash (checked per actual interval: slot_key, part)
+    # 1.b Teacher no-clash (checked per actual interval: slot_key, part)
     teacher_period_terms: Dict[str, Dict[Tuple[str, int], List[cp_model.IntVar]]] = {
         tid: {} for tid in all_teacher_ids
     }
@@ -236,40 +208,17 @@ def solve(inp: SolverInput) -> SolverResult:
                 for ci, slot in enumerate(cand_s):
                     for part in (1, 2):
                         act = period_active[(sid, mi, ci, part)]
-                        t_act = model.new_bool_var(f"t_act_s{sid}_m{mi}_c{ci}_p{part}_t{ti}")
-                        model.add_bool_and([tv, act]).only_enforce_if(t_act)
-                        model.add_bool_or([tv.Not(), act.Not()]).only_enforce_if(t_act.Not())
+                        t_act = m1.new_bool_var(f"t_act_s{sid}_m{mi}_c{ci}_p{part}_t{ti}")
+                        m1.add_bool_and([tv, act]).only_enforce_if(t_act)
+                        m1.add_bool_or([tv.Not(), act.Not()]).only_enforce_if(t_act.Not())
                         teacher_period_terms[teacher_id].setdefault((slot.key, part), []).append(t_act)
 
     for tid, period_dict in teacher_period_terms.items():
         for (sk, part), term_list in period_dict.items():
             if len(term_list) > 1:
-                model.add(sum(term_list) <= 1)
+                m1.add(sum(term_list) <= 1)
 
-    # (c) Student no-clash (checked per actual interval: slot_key, part)
-    student_period_terms: Dict[str, Dict[Tuple[str, int], List[cp_model.IntVar]]] = {}
-    for roll, sub_map in student_vars.items():
-        for subject_code, sid_map in sub_map.items():
-            for sid, avar in sid_map.items():
-                section = section_by_id.get(sid)
-                if section is None:
-                    continue
-                cand_s = inp.candidate_slots.get(sid, [])
-                for mi in range(len(section.meetings)):
-                    for ci, slot in enumerate(cand_s):
-                        for part in (1, 2):
-                            act = period_active[(sid, mi, ci, part)]
-                            s_act = model.new_bool_var(f"s_act_r{roll}_s{sid}_m{mi}_c{ci}_p{part}")
-                            model.add_bool_and([avar, act]).only_enforce_if(s_act)
-                            model.add_bool_or([avar.Not(), act.Not()]).only_enforce_if(s_act.Not())
-                            student_period_terms.setdefault(roll, {}).setdefault((slot.key, part), []).append(s_act)
-
-    for roll, period_dict in student_period_terms.items():
-        for (sk, part), term_list in period_dict.items():
-            if len(term_list) > 1:
-                model.add(sum(term_list) <= 1)
-
-    # (d) Non-repetition: multiple meetings of the same section cannot share the same physical slot
+    # 1.c Meeting Non-repetition (same section cannot share same physical slot)
     for section in sections:
         sid = section.id
         n_meetings = len(section.meetings)
@@ -277,23 +226,9 @@ def solve(inp: SolverInput) -> SolverResult:
             cand_s = inp.candidate_slots.get(sid, [])
             for ci in range(len(cand_s)):
                 same_slot_vars = [slot_active_in[sid][mi][ci] for mi in range(n_meetings)]
-                model.add(sum(same_slot_vars) <= 1)
+                m1.add(sum(same_slot_vars) <= 1)
 
-    # (e) Section capacity
-    for section in sections:
-        sid = section.id
-        sub = section.subject_code
-        enrolled_rvars = []
-        for roll in inp.subject_students.get(sub, []):
-            avar = student_vars.get(roll, {}).get(sub, {}).get(sid)
-            if avar is not None:
-                enrolled_rvars.append(avar)
-        if enrolled_rvars:
-            model.add(sum(enrolled_rvars) <= section.capacity)
-
-    # (f) Hard teacher-subject weekly load limits from the teacher CSV.
-    # A missing limit is legacy/unlimited; imported subject-load pairs are
-    # enforced against the real weekly hours of each assigned section.
+    # 1.d Hard teacher-subject weekly load limits
     for teacher_id in all_teacher_ids:
         for subject_code in subject_sections:
             maximum = inp.teacher_subject_loads.get((teacher_id, subject_code))
@@ -311,89 +246,271 @@ def solve(inp: SolverInput) -> SolverResult:
                     if candidate_teacher == teacher_id and teacher_vars[section.id]:
                         terms.append(subject_hours * teacher_vars[section.id][ti])
             if terms:
-                model.add(sum(terms) <= maximum)
+                m1.add(sum(terms) <= maximum)
 
-    # (f) Student BLOCKED slots
+    # 1.e Single-section student clash prevention in Stage 1:
     blocked_value = PreferenceRating.BLOCKED.value
-    for roll, sub_prefs in inp.time_preferences.items():
-        blocked_slots: Set[str] = {
-            sk for sk, rating in sub_prefs.items() if rating == blocked_value
-        }
-        if not blocked_slots:
+    enrolled_set = {
+        sc: set(students)
+        for sc, students in inp.subject_students.items()
+    }
+
+    # Avoid placing a single section in a slot blocked by any of its students
+    for subject_code, sids in subject_sections.items():
+        if len(sids) == 1:
+            sid = sids[0]
+            sec = section_by_id.get(sid)
+            if sec:
+                cand_s = inp.candidate_slots.get(sid, [])
+                for roll in enrolled_set.get(subject_code, set()):
+                    st_prefs = inp.time_preferences.get(roll, {})
+                    for ci, slot in enumerate(cand_s):
+                        if st_prefs.get(slot.key) == blocked_value:
+                            for mi in range(len(sec.meetings)):
+                                m1.add(slot_active_in[sid][mi][ci] == 0)
+
+    # For any two single-section subjects sharing enrolled students:
+    all_single_sec_codes = [sc for sc, sids in subject_sections.items() if len(sids) == 1]
+    for i in range(len(all_single_sec_codes)):
+        for j in range(i + 1, len(all_single_sec_codes)):
+            sc1 = all_single_sec_codes[i]
+            sc2 = all_single_sec_codes[j]
+            if enrolled_set.get(sc1, set()) & enrolled_set.get(sc2, set()):
+                sid1 = subject_sections[sc1][0]
+                sid2 = subject_sections[sc2][0]
+                sec1 = section_by_id[sid1]
+                sec2 = section_by_id[sid2]
+                cand_s1 = {s.key: ci for ci, s in enumerate(inp.candidate_slots.get(sid1, []))}
+                cand_s2 = {s.key: ci for ci, s in enumerate(inp.candidate_slots.get(sid2, []))}
+                common_keys = set(cand_s1.keys()) & set(cand_s2.keys())
+                for sk in common_keys:
+                    ci1 = cand_s1[sk]
+                    ci2 = cand_s2[sk]
+                    for mi1 in range(len(sec1.meetings)):
+                        for mi2 in range(len(sec2.meetings)):
+                            for part in (1, 2):
+                                act1 = period_active.get((sid1, mi1, ci1, part))
+                                act2 = period_active.get((sid2, mi2, ci2, part))
+                                if act1 is not None and act2 is not None:
+                                    m1.add(act1 + act2 <= 1)
+
+    # 1.f Division & Batch Cohort Non-Overlap Constraints
+    slot_indices: Dict[int, Dict[str, int]] = {}
+    for s in sections:
+        cand_s = inp.candidate_slots.get(s.id, [])
+        slot_indices[s.id] = {slot.key: ci for ci, slot in enumerate(cand_s)}
+
+    all_slot_keys = sorted({slot.key for cand_s in inp.candidate_slots.values() for slot in cand_s})
+
+    lab_batches: Dict[Tuple[int, int], List[Tuple[int, int]]] = defaultdict(list)
+    core_theory_tracks: Dict[Tuple[int, int], List[Tuple[int, int]]] = defaultdict(list)
+    elective_track_meets: Dict[Tuple[int, str, int], List[Tuple[int, int]]] = defaultdict(list)
+    all_semesters = set(inp.subject_semesters.values()) if inp.subject_semesters else {0}
+
+    for s in sections:
+        sem = inp.subject_semesters.get(s.subject_code, 0)
+        tag = inp.subject_tags.get(s.subject_code, "")
+        stype = inp.subject_types.get(s.subject_code, "")
+        subtags = inp.subject_subtags.get(s.subject_code, [])
+
+        m_lab = re.search(r"-L(\d+)$", s.label)
+        m_theo = re.search(r"-T(\d+)$", s.label)
+
+        if m_lab:
+            b_idx = int(m_lab.group(1))
+            for mi in range(len(s.meetings)):
+                lab_batches[(sem, b_idx)].append((s.id, mi))
+                for stag in subtags:
+                    elective_track_meets[(sem, stag, b_idx)].append((s.id, mi))
+        elif m_theo:
+            div_idx = int(m_theo.group(1))
+            if not tag or tag in ("BSC", "PCC", "CORE") or (not subtags and stype == "theory"):
+                for mi in range(len(s.meetings)):
+                    core_theory_tracks[(sem, div_idx)].append((s.id, mi))
+            for stag in subtags:
+                for mi in range(len(s.meetings)):
+                    elective_track_meets[(sem, stag, div_idx)].append((s.id, mi))
+
+    # Constraint 1: Labs within the same batch b cannot overlap
+    for (sem, b_idx), meets in lab_batches.items():
+        for sk in all_slot_keys:
+            for part in (1, 2):
+                terms = [
+                    period_active[(sid, mi, slot_indices[sid][sk], part)]
+                    for sid, mi in meets
+                    if sk in slot_indices[sid]
+                ]
+                if len(terms) > 1:
+                    m1.add(sum(terms) <= 1)
+
+    # Constraint 2: Core theories within the same division k cannot overlap
+    for (sem, div_idx), meets in core_theory_tracks.items():
+        for sk in all_slot_keys:
+            for part in (1, 2):
+                terms = [
+                    period_active[(sid, mi, slot_indices[sid][sk], part)]
+                    for sid, mi in meets
+                    if sk in slot_indices[sid]
+                ]
+                if len(terms) > 1:
+                    m1.add(sum(terms) <= 1)
+
+    # Constraint 3: Lab batch b and its division k cannot overlap
+    for sem in all_semesters:
+        sem_divs = [div for (s_sem, div) in core_theory_tracks.keys() if s_sem == sem]
+        sem_batches = [b for (s_sem, b) in lab_batches.keys() if s_sem == sem]
+        if sem_divs and sem_batches:
+            num_divs = max(sem_divs)
+            num_batches = max(sem_batches)
+            for b in sem_batches:
+                div_k = min(num_divs, max(1, 1 + (b - 1) * num_divs // num_batches))
+                t_meets = core_theory_tracks.get((sem, div_k), [])
+                l_meets = lab_batches.get((sem, b), [])
+                if t_meets and l_meets:
+                    for sk in all_slot_keys:
+                        for part in (1, 2):
+                            t_terms = [
+                                period_active[(sid, mi, slot_indices[sid][sk], part)]
+                                for sid, mi in t_meets
+                                if sk in slot_indices[sid]
+                            ]
+                            l_terms = [
+                                period_active[(sid, mi, slot_indices[sid][sk], part)]
+                                for sid, mi in l_meets
+                                if sk in slot_indices[sid]
+                            ]
+                            if t_terms and l_terms:
+                                m1.add(sum(t_terms) + sum(l_terms) <= 1)
+
+    # Constraint 4: Electives sharing the same track (subtag) cannot clash within their division/batch
+    elective_theory_by_subtag: Dict[Tuple[int, str, int], List[Tuple[int, int]]] = defaultdict(list)
+    elective_lab_by_subtag: Dict[Tuple[int, str, int], List[Tuple[int, int]]] = defaultdict(list)
+
+    for s in sections:
+        sem = inp.subject_semesters.get(s.subject_code, 0)
+        subtags = inp.subject_subtags.get(s.subject_code, [])
+        if not subtags:
             continue
-        for subject_code, sids in subject_sections.items():
-            for sid in sids:
-                section = section_by_id.get(sid)
-                if section is None:
-                    continue
-                cand_s = inp.candidate_slots.get(sid, [])
-                avar = student_vars.get(roll, {}).get(subject_code, {}).get(sid)
-                if avar is None:
-                    continue
-                for mi in range(len(section.meetings)):
-                    for ci, slot in enumerate(cand_s):
-                        if slot.key in blocked_slots:
-                            s_act = slot_active_in[sid][mi][ci]
-                            model.add_bool_or([avar.Not(), s_act.Not()])
+        m_lab = re.search(r"-L(\d+)$", s.label)
+        m_theo = re.search(r"-T(\d+)$", s.label)
+        for stag in subtags:
+            if m_theo:
+                div_idx = int(m_theo.group(1))
+                for mi in range(len(s.meetings)):
+                    elective_theory_by_subtag[(sem, stag, div_idx)].append((s.id, mi))
+            elif m_lab:
+                b_idx = int(m_lab.group(1))
+                for mi in range(len(s.meetings)):
+                    elective_lab_by_subtag[(sem, stag, b_idx)].append((s.id, mi))
 
-    # ── Objective ─────────────────────────────────────────────────────────
+    for (sem, stag, div_k), meets in elective_theory_by_subtag.items():
+        if len(meets) > 1:
+            for sk in all_slot_keys:
+                for part in (1, 2):
+                    terms = [
+                        period_active[(sid, mi, slot_indices[sid][sk], part)]
+                        for sid, mi in meets
+                        if sk in slot_indices[sid]
+                    ]
+                    if len(terms) > 1:
+                        m1.add(sum(terms) <= 1)
 
-    objective_terms: List[cp_model.LinearExpr] = []
+    for (sem, stag, b_idx), meets in elective_lab_by_subtag.items():
+        if len(meets) > 1:
+            for sk in all_slot_keys:
+                for part in (1, 2):
+                    terms = [
+                        period_active[(sid, mi, slot_indices[sid][sk], part)]
+                        for sid, mi in meets
+                        if sk in slot_indices[sid]
+                    ]
+                    if len(terms) > 1:
+                        m1.add(sum(terms) <= 1)
 
-    # 1. Time-slot satisfaction penalty (primary, weight=TIME_WEIGHT)
-    for roll, sub_map in student_vars.items():
-        time_pref = inp.time_preferences.get(roll, {})
-        for subject_code, sid_map in sub_map.items():
-            for sid, avar in sid_map.items():
-                section = section_by_id.get(sid)
-                if section is None:
-                    continue
-                cand_s = inp.candidate_slots.get(sid, [])
-                for mi in range(len(section.meetings)):
-                    for ci, slot in enumerate(cand_s):
-                        rating = time_pref.get(slot.key)
-                        penalty = (
-                            _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
-                            if rating is not None
-                            else _DEFAULT_TIME_PENALTY
-                        )
-                        s_act = slot_active_in[sid][mi][ci]
-                        combined = model.new_bool_var(f"obj_time_r{roll}_s{sid}_m{mi}_c{ci}")
-                        model.add_bool_and([avar, s_act]).only_enforce_if(combined)
-                        model.add_bool_or([avar.Not(), s_act.Not()]).only_enforce_if(combined.Not())
-                        if penalty > 0:
-                            objective_terms.append(
-                                cp_model.LinearExpr.term(combined, _TIME_WEIGHT * penalty)
-                            )
+    # Constraint 4b: Core theory and elective theory in the same division k cannot overlap
+    for (sem, stag, div_k), e_meets in elective_theory_by_subtag.items():
+        c_meets = core_theory_tracks.get((sem, div_k), [])
+        if c_meets and e_meets:
+            for sk in all_slot_keys:
+                for part in (1, 2):
+                    c_terms = [period_active[(sid, mi, slot_indices[sid][sk], part)] for sid, mi in c_meets if sk in slot_indices[sid]]
+                    e_terms = [period_active[(sid, mi, slot_indices[sid][sk], part)] for sid, mi in e_meets if sk in slot_indices[sid]]
+                    if c_terms and e_terms:
+                        m1.add(sum(c_terms) + sum(e_terms) <= 1)
 
-    # 2. Faculty preference penalty (secondary, weight=FACULTY_WEIGHT)
-    for roll, sub_map in student_vars.items():
-        fac_pref = inp.faculty_preferences.get(roll, {})
-        for subject_code, sid_map in sub_map.items():
-            teacher_ratings = fac_pref.get(subject_code, {})
-            if not teacher_ratings:
+    # Constraint 5: Cross-Division Shared Electives (e.g. MDM in Sem 4)
+    # A subject is a cross-division shared elective if it is a pure theory elective with no corresponding lab
+    # and has fewer sections than the semester's core theory divisions.
+    # Because students across all divisions must choose one of these electives,
+    # they cannot overlap with ANY core theory division or ANY common lab batch of that semester.
+    for sem in all_semesters:
+        sem_divs = [div for (s_sem, div) in core_theory_tracks.keys() if s_sem == sem]
+        num_divs = max(sem_divs) if sem_divs else 0
+        if num_divs == 0:
+            continue
+
+        sem_subject_codes = {s.subject_code for s in sections if inp.subject_semesters.get(s.subject_code) == sem}
+        sub_sections: Dict[str, List[Section]] = defaultdict(list)
+        for s in sections:
+            if s.subject_code in sem_subject_codes:
+                sub_sections[s.subject_code].append(s)
+
+        # Find pure theory cross-division electives
+        cross_div_meets: List[Tuple[int, int]] = []
+        for code, secs in sub_sections.items():
+            subtags = inp.subject_subtags.get(code, [])
+            tag = inp.subject_tags.get(code, "")
+            stype = inp.subject_types.get(code, "")
+            if not subtags and tag.upper() in ("BSC", "PCC", "CORE", ""):
                 continue
-            for sid, avar in sid_map.items():
-                cand_t = inp.candidate_teachers.get(sid, [])
-                for ti, teacher_id in enumerate(cand_t):
-                    if not teacher_vars[sid]:
-                        continue
-                    tv = teacher_vars[sid][ti]
-                    rating = teacher_ratings.get(teacher_id)
-                    penalty = (
-                        _FACULTY_PREF_PENALTY.get(rating, _DEFAULT_FACULTY_PENALTY)
-                        if rating is not None
-                        else _DEFAULT_FACULTY_PENALTY
-                    )
-                    combined = model.new_bool_var(f"obj_fac_r{roll}_s{sid}_t{ti}")
-                    model.add_bool_and([avar, tv]).only_enforce_if(combined)
-                    model.add_bool_or([avar.Not(), tv.Not()]).only_enforce_if(combined.Not())
-                    if penalty > 0:
-                        objective_terms.append(
-                            cp_model.LinearExpr.term(combined, _FACULTY_WEIGHT * penalty)
-                        )
+            # If there are labs associated with this tag or subtag, it is division/batch tracked
+            has_associated_labs = any(
+                inp.subject_types.get(other_code) == "lab"
+                and (
+                    inp.subject_tags.get(other_code) == tag
+                    or any(st in subtags for st in inp.subject_subtags.get(other_code, []))
+                )
+                for other_code in sem_subject_codes
+            )
+            if not has_associated_labs and len(secs) < num_divs and stype == "theory":
+                for s in secs:
+                    for mi in range(len(s.meetings)):
+                        cross_div_meets.append((s.id, mi))
 
-    # 3. Teacher load balance (tertiary, weight=LOAD_BALANCE_WEIGHT)
+        if cross_div_meets:
+            sem_core_theories = [
+                m for (s_sem, div_k), meets in core_theory_tracks.items()
+                if s_sem == sem for m in meets
+            ]
+            sem_common_labs = [
+                m for (s_sem, b_idx), meets in lab_batches.items()
+                if s_sem == sem for m in meets
+                if not inp.subject_subtags.get(section_by_id[m[0]].subject_code)
+            ]
+            for sk in all_slot_keys:
+                for part in (1, 2):
+                    cd_terms = [
+                        period_active[(sid, mi, slot_indices[sid][sk], part)]
+                        for sid, mi in cross_div_meets
+                        if sk in slot_indices[sid]
+                    ]
+                    if cd_terms:
+                        other_terms = [
+                            period_active[(sid, mi, slot_indices[sid][sk], part)]
+                            for sid, mi in (sem_core_theories + sem_common_labs)
+                            if sk in slot_indices[sid]
+                        ]
+                        if other_terms:
+                            cd_act = m1.new_bool_var(f"cd_act_{sem}_{sk}_{part}")
+                            for cdt in cd_terms:
+                                m1.add(cdt <= cd_act)
+                            for ot in other_terms:
+                                m1.add(ot + cd_act <= 1)
+
+
+
+
+    # Stage 1 Objective: Faculty teaching load balance
     if len(all_teacher_ids) >= 2:
         teacher_load: Dict[str, List[cp_model.IntVar]] = {t: [] for t in all_teacher_ids}
         for section in sections:
@@ -406,40 +523,28 @@ def solve(inp: SolverInput) -> SolverResult:
         load_vars: Dict[str, cp_model.IntVar] = {}
         for teacher_id, assignment_vars in teacher_load.items():
             if assignment_vars:
-                lv = model.new_int_var(0, len(sections), f"load_{teacher_id}")
-                model.add(lv == sum(assignment_vars))
+                lv = m1.new_int_var(0, len(sections), f"load_{teacher_id}")
+                m1.add(lv == sum(assignment_vars))
                 load_vars[teacher_id] = lv
 
         if len(load_vars) >= 2:
-            max_load = model.new_int_var(0, len(sections), "max_load")
-            min_load = model.new_int_var(0, len(sections), "min_load")
+            max_load = m1.new_int_var(0, len(sections), "max_load")
+            min_load = m1.new_int_var(0, len(sections), "min_load")
             load_list = list(load_vars.values())
-            model.add_max_equality(max_load, load_list)
-            model.add_min_equality(min_load, load_list)
-            load_range = model.new_int_var(0, len(sections), "load_range")
-            model.add(load_range == max_load - min_load)
-            objective_terms.append(
-                cp_model.LinearExpr.term(load_range, _LOAD_BALANCE_WEIGHT)
-            )
+            m1.add_max_equality(max_load, load_list)
+            m1.add_min_equality(min_load, load_list)
+            load_range = m1.new_int_var(0, len(sections), "load_range")
+            m1.add(load_range == max_load - min_load)
+            m1.minimize(load_range)
 
-    if objective_terms and not inp.feasibility_only:
-        model.minimize(sum(objective_terms))
+    # Solve Stage 1
+    solver1 = cp_model.CpSolver()
+    solver1.parameters.max_time_in_seconds = max(1.0, min(inp.time_limit_seconds * 0.5, 30.0))
+    solver1.parameters.num_workers = 0
 
-    # ── Solve ─────────────────────────────────────────────────────────────
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = inp.time_limit_seconds
-    # 0 lets OR-Tools use all available logical CPU workers. This is useful
-    # for the larger department-wide feasibility model.
-    solver.parameters.num_workers = 0
-    if inp.feasibility_only:
-        # Feasibility mode only needs the first valid timetable. Continuing
-        # to search after that point provides no useful information.
-        solver.parameters.stop_after_first_solution = True
-
-    t0 = time.monotonic()
-    status_code = solver.solve(model)
-    elapsed = time.monotonic() - t0
+    t0_stage1 = time.monotonic()
+    status1 = solver1.solve(m1)
+    stage1_elapsed = time.monotonic() - t0_stage1
 
     status_map = {
         cp_model.OPTIMAL: "OPTIMAL",
@@ -448,41 +553,36 @@ def solve(inp: SolverInput) -> SolverResult:
         cp_model.UNKNOWN: "UNKNOWN",
         cp_model.MODEL_INVALID: "MODEL_INVALID",
     }
-    status_str = status_map.get(status_code, "UNKNOWN")
+    status1_str = status_map.get(status1, "UNKNOWN")
 
-    result = SolverResult(
-        status=status_str,
-        wall_time_seconds=round(elapsed, 3),
-        num_conflicts=int(solver.num_conflicts),
-    )
-
-    if status_code not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        if status_code == cp_model.UNKNOWN:
-            result.warnings.append(
-                f"Solver timed out after {inp.time_limit_seconds:g} second(s) "
-                "before finding a feasible assignment. Increase the solver time "
-                "limit or reduce the scheduling search space, then try again."
-            )
-        elif status_code == cp_model.MODEL_INVALID:
-            result.warnings.append(
-                "Solver rejected the generated constraint model as invalid. "
-                "Check section meetings, capacities, teacher capabilities, and load values."
+    if status1 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        elapsed = time.monotonic() - total_t0
+        res = SolverResult(
+            status=status1_str,
+            wall_time_seconds=round(elapsed, 3),
+            num_conflicts=int(solver1.num_conflicts),
+        )
+        if status1 == cp_model.UNKNOWN:
+            res.warnings.append(
+                f"Master timetable solver timed out after {stage1_elapsed:.1f}s before finding a valid schedule. "
+                "Check teacher availability or load limits."
             )
         else:
-            result.warnings.append(
-                "Solver proved that no assignment satisfies all hard constraints. "
-                "Review the diagnostic warnings for capacity, availability, clash, or load conflicts."
+            res.warnings.append(
+                "Master timetable solver proved that no schedule satisfies teacher availability, no-clash, or load limits."
             )
-        return result
+        return res
 
-    result.objective_value = int(solver.objective_value)
+    # Extract Stage 1 results (section meetings & teacher assignments)
+    assigned_slot_keys: Dict[int, List[str]] = {}
+    assigned_meetings: Dict[int, List[Meeting]] = {}
+    assigned_teachers: Dict[int, Optional[str]] = {}
 
-    # ── Extract slot and meeting assignments ───────────────────────────────
     for section in sections:
         sid = section.id
         cand_s = inp.candidate_slots.get(sid, [])
-        assigned_slots: List[str] = []
-        assigned_meetings: List[Meeting] = []
+        sec_slots: List[str] = []
+        sec_meets: List[Meeting] = []
 
         for mi, m in enumerate(section.meetings):
             dur = getattr(m, "duration_hours", 2) or 2
@@ -493,48 +593,221 @@ def solve(inp: SolverInput) -> SolverResult:
                 p1_vars = slot_vars_p1[sid][mi]
                 p2_vars = slot_vars_p2[sid][mi]
                 for ci, slot in enumerate(cand_s):
-                    if solver.boolean_value(p1_vars[ci]):
+                    if solver1.boolean_value(p1_vars[ci]):
                         picked_key = slot.key
                         picked_part = 1
                         break
-                    elif solver.boolean_value(p2_vars[ci]):
+                    elif solver1.boolean_value(p2_vars[ci]):
                         picked_key = slot.key
                         picked_part = 2
                         break
             else:
                 vars_2h = slot_vars_2h[sid][mi]
                 for ci, slot in enumerate(cand_s):
-                    if solver.boolean_value(vars_2h[ci]):
+                    if solver1.boolean_value(vars_2h[ci]):
                         picked_key = slot.key
                         picked_part = None
                         break
 
-            assigned_slots.append(picked_key)
-            assigned_meetings.append(
+            sec_slots.append(picked_key)
+            sec_meets.append(
                 Meeting(slot_key=picked_key, duration_hours=dur, slot_part=picked_part)
             )
 
-        result.section_slot_assignments[sid] = assigned_slots
-        result.section_meetings[sid] = assigned_meetings
+        assigned_slot_keys[sid] = sec_slots
+        assigned_meetings[sid] = sec_meets
 
-    # ── Extract teacher assignments ────────────────────────────────────────
+        # Teacher extraction
+        cand_t = inp.candidate_teachers.get(sid, [])
+        picked_teacher = None
+        for ti, teacher_id in enumerate(cand_t):
+            if teacher_vars[sid] and solver1.boolean_value(teacher_vars[sid][ti]):
+                picked_teacher = teacher_id
+                break
+        assigned_teachers[sid] = picked_teacher
+
+    # If no students enrolled in the input, Stage 1 is the complete answer
+    has_students = any(bool(studs) for studs in inp.subject_students.values())
+    if not has_students:
+        elapsed = time.monotonic() - total_t0
+        return SolverResult(
+            status=status1_str,
+            section_slot_assignments=assigned_slot_keys,
+            section_meetings=assigned_meetings,
+            section_teacher_assignments=assigned_teachers,
+            wall_time_seconds=round(elapsed, 3),
+            num_conflicts=int(solver1.num_conflicts),
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 2: Automated Student Section Allocation
+    # ══════════════════════════════════════════════════════════════════════════
+
+    m2 = cp_model.CpModel()
+
+    # Precompute periods occupied by each section: sid -> Set[(slot_key, part)]
+    section_periods: Dict[int, Set[Tuple[str, int]]] = {}
+    for sid, mlist in assigned_meetings.items():
+        pers = set()
+        for m in mlist:
+            if m.duration_hours == 1:
+                pers.add((m.slot_key, m.slot_part or 1))
+            else:
+                pers.add((m.slot_key, 1))
+                pers.add((m.slot_key, 2))
+        section_periods[sid] = pers
+
+    # Decision variables: enroll_vars[(roll, subject_code, sid)]
+    enroll_vars: Dict[Tuple[str, str, int], cp_model.IntVar] = {}
+    student_subject_vars: Dict[str, Dict[str, Dict[int, cp_model.IntVar]]] = {}
+    student_active_sections: Dict[str, List[Tuple[str, int, cp_model.IntVar]]] = {}
+
+    for subject_code, sids in subject_sections.items():
+        for roll in inp.subject_students.get(subject_code, []):
+            student_subject_vars.setdefault(roll, {}).setdefault(subject_code, {})
+            sec_vars = []
+            for sid in sids:
+                v = m2.new_bool_var(f"enroll_r{roll}_sub{subject_code}_s{sid}")
+                enroll_vars[(roll, subject_code, sid)] = v
+                student_subject_vars[roll][subject_code][sid] = v
+                sec_vars.append(v)
+                student_active_sections.setdefault(roll, []).append((subject_code, sid, v))
+            if sec_vars:
+                m2.add_exactly_one(sec_vars)
+
+    # 2.a Section capacities
     for section in sections:
         sid = section.id
-        cand_t = inp.candidate_teachers.get(sid, [])
-        assigned_teacher = None
-        for ti, teacher_id in enumerate(cand_t):
-            if teacher_vars[sid] and solver.boolean_value(teacher_vars[sid][ti]):
-                assigned_teacher = teacher_id
-                break
-        result.section_teacher_assignments[sid] = assigned_teacher
+        sub = section.subject_code
+        enrolled = [
+            enroll_vars[(roll, sub, sid)]
+            for roll in inp.subject_students.get(sub, [])
+            if (roll, sub, sid) in enroll_vars
+        ]
+        if enrolled:
+            m2.add(sum(enrolled) <= section.capacity)
 
-    # ── Extract student-section assignments ───────────────────────────────
-    for roll, sub_map in student_vars.items():
-        result.student_section_assignments.setdefault(roll, {})
-        for subject_code, sid_map in sub_map.items():
-            for sid, avar in sid_map.items():
-                if solver.boolean_value(avar):
-                    result.student_section_assignments[roll][subject_code] = sid
-                    break
+    # 2.b Student BLOCKED slots
+    for roll, sub_prefs in inp.time_preferences.items():
+        blocked_slots = {sk for sk, rating in sub_prefs.items() if rating == blocked_value}
+        if not blocked_slots:
+            continue
+        for (r, sub, sid), v in enroll_vars.items():
+            if r == roll:
+                if any(sk in blocked_slots for sk, _ in section_periods.get(sid, set())):
+                    m2.add(v == 0)
 
-    return result
+    # 2.c Student no-clash (linear period sum constraint)
+    for roll, sec_tuples in student_active_sections.items():
+        slot_terms: Dict[Tuple[str, int], List[cp_model.IntVar]] = {}
+        for sc, sid, v in sec_tuples:
+            for p in section_periods.get(sid, set()):
+                slot_terms.setdefault(p, []).append(v)
+        for p, vlist in slot_terms.items():
+            if len(vlist) > 1:
+                m2.add(sum(vlist) <= 1)
+
+    # 2.d Stage 2 Objectives (Preferences & Section Size Balancing)
+    obj_terms: List[cp_model.LinearExpr] = []
+    if not inp.feasibility_only:
+        # Time-slot satisfaction
+        for (roll, sub, sid), v in enroll_vars.items():
+            time_pref = inp.time_preferences.get(roll, {})
+            for m in assigned_meetings.get(sid, []):
+                rating = time_pref.get(m.slot_key)
+                if rating is not None and rating != _DEFAULT_TIME_PENALTY:
+                    penalty = _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
+                    if penalty > 0:
+                        obj_terms.append(cp_model.LinearExpr.term(v, _TIME_WEIGHT * penalty))
+
+        # Faculty preference
+        for (roll, sub, sid), v in enroll_vars.items():
+            teacher_id = assigned_teachers.get(sid)
+            if teacher_id:
+                fac_pref = inp.faculty_preferences.get(roll, {})
+                teacher_ratings = fac_pref.get(sub, {})
+                rating = teacher_ratings.get(teacher_id)
+                if rating is not None and rating != _DEFAULT_FACULTY_PENALTY:
+                    penalty = _FACULTY_PREF_PENALTY.get(rating, _DEFAULT_FACULTY_PENALTY)
+                    if penalty > 0:
+                        obj_terms.append(cp_model.LinearExpr.term(v, _FACULTY_WEIGHT * penalty))
+
+        # Parallel section size load balancing (linear absolute deviation)
+        for sc, sids in subject_sections.items():
+            tot = len(inp.subject_students.get(sc, []))
+            if len(sids) >= 2 and tot > 0:
+                ideal = tot // len(sids)
+                for sid in sids:
+                    enrolled = [
+                        enroll_vars[(roll, sc, sid)]
+                        for roll in inp.subject_students.get(sc, [])
+                        if (roll, sc, sid) in enroll_vars
+                    ]
+                    sec_count = sum(enrolled)
+                    dev = m2.new_int_var(0, tot, f"dev_{sid}")
+                    m2.add(dev >= sec_count - ideal)
+                    m2.add(dev >= ideal - sec_count)
+                    obj_terms.append(cp_model.LinearExpr.term(dev, 2))
+
+    # Solve Stage 2
+    rem_time = max(1.0, inp.time_limit_seconds - stage1_elapsed)
+    solver2 = cp_model.CpSolver()
+    solver2.parameters.num_workers = 0
+
+    if inp.feasibility_only or not obj_terms:
+        solver2.parameters.max_time_in_seconds = rem_time
+        solver2.parameters.stop_after_first_solution = True
+        status2 = solver2.solve(m2)
+    else:
+        # Two-phase solve: first obtain a guaranteed valid assignment via feasibility pass (<5s)
+        solver2_feas = cp_model.CpSolver()
+        solver2_feas.parameters.max_time_in_seconds = min(10.0, max(2.0, rem_time * 0.4))
+        solver2_feas.parameters.num_workers = 0
+        solver2_feas.parameters.stop_after_first_solution = True
+        status_feas = solver2_feas.solve(m2)
+
+        if status_feas in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            # Warm-start optimization using the valid feasible assignment
+            for k, v in enroll_vars.items():
+                m2.add_hint(v, 1 if solver2_feas.boolean_value(v) else 0)
+            m2.minimize(sum(obj_terms))
+            rem_time_opt = max(1.0, inp.time_limit_seconds - (time.monotonic() - total_t0))
+            solver2.parameters.max_time_in_seconds = rem_time_opt
+            status2 = solver2.solve(m2)
+            if status2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                solver2 = solver2_feas
+                status2 = status_feas
+        else:
+            solver2 = solver2_feas
+            status2 = status_feas
+    status2_str = status_map.get(status2, "UNKNOWN")
+    elapsed = time.monotonic() - total_t0
+
+    res = SolverResult(
+        status=status2_str,
+        section_slot_assignments=assigned_slot_keys,
+        section_meetings=assigned_meetings,
+        section_teacher_assignments=assigned_teachers,
+        wall_time_seconds=round(elapsed, 3),
+        num_conflicts=int(solver1.num_conflicts + solver2.num_conflicts),
+    )
+
+    if status2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        if status2 == cp_model.UNKNOWN:
+            res.warnings.append(
+                f"Student allocation solver timed out after {rem_time:.1f}s before finding a valid assignment."
+            )
+        else:
+            res.warnings.append(
+                "Student allocation proved infeasible. Section capacities or student clash constraints could not be satisfied."
+            )
+        return res
+
+    res.objective_value = int(solver2.objective_value) if not inp.feasibility_only else 0
+
+    # Extract student-section assignments
+    for (roll, sub, sid), v in enroll_vars.items():
+        if solver2.boolean_value(v):
+            res.student_section_assignments.setdefault(roll, {})[sub] = sid
+
+    return res
