@@ -59,6 +59,7 @@ IT307,Web Technologies,PE1,IT307_WT,3,theory,3,30,
 IT308,Mobile Computing,PE1,IT308_MC,3,theory,3,30,
 IT309,Cloud Foundations,MDM,IT309_CF,3,theory,3,30,
 IT310,Cyber Security Intro,MDM,IT310_CS,3,theory,3,30,
+IT311,Probabilistic Graphical Models,PE1,AIML|DS,5,theory,4,72,
 `;
 
 export const TEACHER_CSV_TEMPLATE = `teacher_id,teacher_name,subject_1,subject_2,subject_3,subject_4

@@ -94,8 +94,8 @@ def get_available_choices(roll_number: str, store: InMemoryStore = Depends(get_s
     for s in sem_subjects:
         if s.subject_tag in cb_tags:
             elective_subjects.append(s)
-            if s.subtag:
-                available_choices.setdefault(s.subject_tag, set()).add(s.subtag)
+            for subtag in s.supported_subtags:
+                available_choices.setdefault(s.subject_tag, set()).add(subtag)
 
     sorted_choices = {tag: sorted(list(subtags)) for tag, subtags in sorted(available_choices.items())}
 
@@ -148,8 +148,9 @@ def save_student_lock_in(
 
     available_choices: Dict[str, List[str]] = {}
     for s in sem_subjects:
-        if s.subject_tag in applicable_tags and s.subtag:
-            available_choices.setdefault(s.subject_tag, set()).add(s.subtag)
+        if s.subject_tag in applicable_tags:
+            for subtag in s.supported_subtags:
+                available_choices.setdefault(s.subject_tag, set()).add(subtag)
     sorted_choices = {tag: sorted(list(subtags)) for tag, subtags in available_choices.items()}
 
     errors = validate_lock_in(body.choices, sorted_choices, applicable_tags)

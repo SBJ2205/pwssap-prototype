@@ -39,6 +39,19 @@ class Subject:
     slot_structure: Optional[str] = None
     linked_pattern: Optional[List[str]] = None
 
+    @property
+    def supported_subtags(self) -> List[str]:
+        """Return every elective track that can take this subject.
+
+        The CSV keeps shared-track values compact, for example ``AIML|DS``.
+        """
+        if not self.subtag:
+            return []
+        return [value.strip() for value in self.subtag.split("|") if value.strip()]
+
+    def supports_subtag(self, selected_subtag: str) -> bool:
+        return selected_subtag.strip() in self.supported_subtags
+
 
 @dataclass
 class Teacher:

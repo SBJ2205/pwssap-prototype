@@ -202,8 +202,8 @@ def auto_lock_in_pending_students(store: InMemoryStore = Depends(get_store)):
         sem_subs = [sub for sub in subjects if sub.semester == s.semester and sub.subject_tag in cb_tags]
         tag_subtags = {}
         for sub in sem_subs:
-            if sub.subtag:
-                tag_subtags.setdefault(sub.subject_tag, set()).add(sub.subtag)
+            for subtag in sub.supported_subtags:
+                tag_subtags.setdefault(sub.subject_tag, set()).add(subtag)
 
         choices = {}
         for tag, subtags in tag_subtags.items():

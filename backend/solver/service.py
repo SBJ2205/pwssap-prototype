@@ -143,9 +143,9 @@ def run_solver_for_run(
             else:
                 lock_in = store.get_lock_in_for_student(student.roll_number)
                 chosen_subtag = lock_in.get(subject.subject_tag)
-                if chosen_subtag and subject.subtag and chosen_subtag == subject.subtag:
+                if chosen_subtag and subject.supports_subtag(chosen_subtag):
                     enrolled.append(student.roll_number)
-                elif not subject.subtag:
+                elif not subject.supported_subtags:
                     selections = store.get_student_choice_selections(student.roll_number)
                     choice_numeric_values = {
                         c.numeric_value

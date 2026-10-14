@@ -107,8 +107,8 @@ class InMemoryStore:
         """Returns {tag: [subtag1, subtag2, ...]} for tags in the catalog that define subtags."""
         result: Dict[str, set] = {}
         for s in self.list_subjects(semester):
-            if s.subtag:
-                result.setdefault(s.subject_tag, set()).add(s.subtag)
+            for subtag in s.supported_subtags:
+                result.setdefault(s.subject_tag, set()).add(subtag)
         return {tag: sorted(list(subtags)) for tag, subtags in sorted(result.items())}
 
     # ── Cycle Choice Configs (department-level) ───────────────────────────
@@ -254,7 +254,7 @@ class InMemoryStore:
                 enrolled.append(s)
             else:
                 chosen_subtag = lock_in.get(s.subject_tag)
-                if chosen_subtag and s.subtag == chosen_subtag:
+                if chosen_subtag and s.supports_subtag(chosen_subtag):
                     enrolled.append(s)
         return enrolled
 
@@ -329,7 +329,7 @@ class InMemoryStore:
         count = 0
         for student in semester_students:
             lock_in = self.get_lock_in_for_student(student.roll_number)
-            if subject.subtag and lock_in.get(subject.subject_tag) == subject.subtag:
+            if subject.supports_subtag(lock_in.get(subject.subject_tag, "")):
                 count += 1
         return count
 
