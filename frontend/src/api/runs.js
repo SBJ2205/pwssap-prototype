@@ -43,6 +43,12 @@ export const runSolve = (runId, timeLimit) => {
   return client.post(`/admin/runs/${runId}/solve`, null, { params }).then(r => r.data);
 };
 
+// POST /admin/runs/{id}/feasibility — hard constraints only, no publication.
+export const checkFeasibility = (runId, timeLimit) => {
+  const params = timeLimit != null ? { time_limit: timeLimit } : {};
+  return client.post(`/admin/runs/${runId}/feasibility`, null, { params }).then(r => r.data);
+};
+
 // ── Published timetable (admin) ─────────────────────────────────────────
 // GET /admin/runs/{id}/summary
 // →  {run_id, semester, run_status, section_count, sections: [...], weekly_grid: {day: [...]}}

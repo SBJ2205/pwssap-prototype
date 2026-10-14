@@ -77,6 +77,7 @@ class SolverInput:
     teacher_availability: Dict[str, Dict[str, bool]]
     subject_students: Dict[str, List[str]]
     teacher_subject_loads: Dict[Tuple[str, str], Optional[int]] = field(default_factory=dict)
+    feasibility_only: bool = False
     time_limit_seconds: float = 30.0
 
 
@@ -421,14 +422,20 @@ def solve(inp: SolverInput) -> SolverResult:
                 cp_model.LinearExpr.term(load_range, _LOAD_BALANCE_WEIGHT)
             )
 
-    if objective_terms:
+    if objective_terms and not inp.feasibility_only:
         model.minimize(sum(objective_terms))
 
     # ── Solve ─────────────────────────────────────────────────────────────
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = inp.time_limit_seconds
-    solver.parameters.num_workers = 4
+    # 0 lets OR-Tools use all available logical CPU workers. This is useful
+    # for the larger department-wide feasibility model.
+    solver.parameters.num_workers = 0
+    if inp.feasibility_only:
+        # Feasibility mode only needs the first valid timetable. Continuing
+        # to search after that point provides no useful information.
+        solver.parameters.stop_after_first_solution = True
 
     t0 = time.monotonic()
     status_code = solver.solve(model)
@@ -450,9 +457,22 @@ def solve(inp: SolverInput) -> SolverResult:
     )
 
     if status_code not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        result.warnings.append(
-            f"Solver returned status={status_str}. No assignments produced."
-        )
+        if status_code == cp_model.UNKNOWN:
+            result.warnings.append(
+                f"Solver timed out after {inp.time_limit_seconds:g} second(s) "
+                "before finding a feasible assignment. Increase the solver time "
+                "limit or reduce the scheduling search space, then try again."
+            )
+        elif status_code == cp_model.MODEL_INVALID:
+            result.warnings.append(
+                "Solver rejected the generated constraint model as invalid. "
+                "Check section meetings, capacities, teacher capabilities, and load values."
+            )
+        else:
+            result.warnings.append(
+                "Solver proved that no assignment satisfies all hard constraints. "
+                "Review the diagnostic warnings for capacity, availability, clash, or load conflicts."
+            )
         return result
 
     result.objective_value = int(solver.objective_value)

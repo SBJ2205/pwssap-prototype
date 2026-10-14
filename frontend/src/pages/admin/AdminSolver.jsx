@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { generateSections, runSolve, getSections } from "../../api/runs";
+import { checkFeasibility, generateSections, runSolve, getSections } from "../../api/runs";
 import { getSubjects, getStudents, getTeachers } from "../../api/catalog";
 import { initializeCycle } from "../../api/cycle";
 import { apiErrorMessage } from "../../api/client";
@@ -38,6 +38,8 @@ export default function AdminSolver({
   const [progress, setProgress] = useState(0);
   const [solveResult, setSolveResult] = useState(null);
   const [solveError, setSolveError] = useState(null);
+  const [checkingFeasibility, setCheckingFeasibility] = useState(false);
+  const [feasibilityResult, setFeasibilityResult] = useState(null);
 
   const checkPreflight = useCallback(async () => {
     setPreflightLoading(true);
@@ -155,6 +157,25 @@ export default function AdminSolver({
       setSolveError(apiErrorMessage(err));
     } finally {
       setSolving(false);
+    }
+  }
+
+  async function handleCheckFeasibility() {
+    const runIdToUse = internalRunId != null ? internalRunId : (currentRunId != null ? currentRunId : activeRunId);
+    if (runIdToUse == null || isNaN(Number(runIdToUse))) {
+      setSolveError("No cycle run initialized. Generate sections first.");
+      return;
+    }
+    setCheckingFeasibility(true);
+    setSolveError(null);
+    setFeasibilityResult(null);
+    try {
+      const result = await checkFeasibility(Number(runIdToUse), timeLimit);
+      setFeasibilityResult(result);
+    } catch (err) {
+      setSolveError(apiErrorMessage(err));
+    } finally {
+      setCheckingFeasibility(false);
     }
   }
 
@@ -345,7 +366,7 @@ export default function AdminSolver({
             <input
               type="number"
               min="5"
-              max="120"
+              max="240"
               value={timeLimit}
               onChange={e => setTimeLimit(Number(e.target.value))}
               style={{
@@ -357,12 +378,25 @@ export default function AdminSolver({
                 fontWeight: 600,
               }}
             />
-            <span style={{ fontSize: 12, color: "#888" }}>seconds (default: 30s)</span>
+            <span style={{ fontSize: 12, color: "#888" }}>seconds (default: 30s, maximum: 240s)</span>
           </div>
         </div>
 
         {/* Action Button */}
         <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={handleCheckFeasibility}
+            disabled={checkingFeasibility || solving || !isReady || sectionsCount === 0}
+            style={{
+              padding: "10px 20px",
+              background: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "#aaa" : "#185FA5",
+              color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700,
+              cursor: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "not-allowed" : "pointer",
+              marginRight: 10,
+            }}
+          >
+            {checkingFeasibility ? "Checking Hard Constraints…" : "✓ Check Feasibility First"}
+          </button>
           <button
             onClick={handleRunSolver}
             disabled={solving || !isReady}
@@ -389,6 +423,18 @@ export default function AdminSolver({
             </div>
           )}
         </div>
+
+        {feasibilityResult && (
+          <div style={{ background: feasibilityResult.feasible ? "#F7FAF4" : "#FCEBEB", border: `1px solid ${feasibilityResult.feasible ? "#C0DD97" : "#F7C1C1"}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, marginBottom: 14, color: feasibilityResult.feasible ? "#27500A" : "#791F1F" }}>
+            <strong>Feasibility check: {feasibilityResult.status}</strong>
+            <span> · completed in {feasibilityResult.wall_time_seconds?.toFixed(2) || "0"}s</span>
+            {feasibilityResult.warnings?.length > 0 && (
+              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {feasibilityResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Progress Bar while solving */}
         {solving && (

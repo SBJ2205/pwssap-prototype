@@ -29,6 +29,7 @@ def run_solver_for_run(
     run_id: int,
     store: InMemoryStore,
     time_limit_seconds: float = 30.0,
+    feasibility_only: bool = False,
 ) -> SolverResult:
     """Orchestrate the full solve cycle for one generation run.
 
@@ -215,6 +216,7 @@ def run_solver_for_run(
         teacher_availability=teacher_availability,
         teacher_subject_loads=teacher_subject_loads,
         subject_students=subject_students,
+        feasibility_only=feasibility_only,
         time_limit_seconds=time_limit_seconds,
     )
 

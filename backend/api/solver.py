@@ -13,7 +13,7 @@ This endpoint is synchronous (runs the solver in the request thread).
 For large instances the 30-second CP-SAT time limit is the natural
 bound; the solver returns FEASIBLE rather than OPTIMAL if it times out.
 
-Optional query param: ?time_limit=<seconds> (default 30, max 120).
+Optional query param: ?time_limit=<seconds> (default 30, max 240).
 """
 from typing import Optional
 
@@ -50,7 +50,7 @@ def _section_to_dict(section: Section) -> dict:
 @router.post("/{run_id}/solve")
 def solve_run(
     run_id: int,
-    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=120.0),
+    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=240.0),
     store: InMemoryStore = Depends(get_store),
 ):
     """Trigger the CP-SAT optimisation for a run.
@@ -84,5 +84,36 @@ def solve_run(
         "num_conflicts": result.num_conflicts,
         "sections": [_section_to_dict(s) for s in sections],
         "student_section_assignments": result.student_section_assignments,
+        "warnings": result.warnings,
+    }
+
+
+@router.post("/{run_id}/feasibility")
+def check_feasibility(
+    run_id: int,
+    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=240.0),
+    store: InMemoryStore = Depends(get_store),
+):
+    """Check hard constraints without optimizing or publishing results."""
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    try:
+        result = run_solver_for_run(
+            run_id=run_id,
+            store=store,
+            time_limit_seconds=time_limit or 30.0,
+            feasibility_only=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "run_id": run_id,
+        "status": result.status,
+        "feasible": result.status in ("OPTIMAL", "FEASIBLE"),
+        "wall_time_seconds": result.wall_time_seconds,
+        "num_conflicts": result.num_conflicts,
         "warnings": result.warnings,
     }

@@ -183,15 +183,13 @@ def _generate_theory_sections(
     valid_slots: List[TimeSlot],
     capable_teacher_ids: List[str],
     teacher_availability_map: Dict[str, Dict[str, bool]],  # teacher_id -> {slot_key: bool}
+    enrolled_count: int,
     section_id_start: int,
 ) -> GeneratedSections:
     """Generate one or more theory sections for a subject.
 
-    For the feasibility-first Phase 8 pass, one theory section is created
-    per subject (the optimizer in Phase 9 will decide if multiple parallel
-    theory sections are needed based on enrollment; Phase 8 just shows
-    the structure works).  Each section gets a linked meeting pattern
-    derived from parse_slot_structure.
+    Generate enough parallel sections to cover enrollment capacity. Each
+    section gets the same linked meeting pattern derived from weekly hours.
     """
     result = GeneratedSections()
     warnings = result.warnings
@@ -205,71 +203,65 @@ def _generate_theory_sections(
         ))
         return result
 
-    num_meetings = len(meeting_hours_list)  # each element is always 2
+    num_sections = max(1, math.ceil(enrolled_count / subject.capacity)) if enrolled_count > 0 else 1
+    num_meetings = len(meeting_hours_list)
 
-    # For Phase 8 we generate exactly one theory section.
-    section_label = f"{subject.subject_code}-T1"
+    for section_number in range(1, num_sections + 1):
+        section_label = f"{subject.subject_code}-T{section_number}"
+        assigned_teacher: Optional[str] = None
+        teacher_avail: Dict[str, bool] = {}
 
-    # Pick a teacher: first capable teacher who has at least one valid slot free.
-    assigned_teacher: Optional[str] = None
-    teacher_avail: Dict[str, bool] = {}
-    for tid in capable_teacher_ids:
-        avail = teacher_availability_map.get(tid, {})
-        # Check if teacher has at least (num_meetings) available slots.
-        free_count = sum(
-            1 for s in valid_slots if avail.get(s.key, True)
-        )
-        if free_count >= num_meetings:
-            assigned_teacher = tid
-            teacher_avail = avail
-            break
+        # This is only an initial placeholder. The solver later considers
+        # every capable teacher and enforces availability and load limits.
+        if capable_teacher_ids:
+            candidate_teacher = capable_teacher_ids[(section_number - 1) % len(capable_teacher_ids)]
+            candidate_avail = teacher_availability_map.get(candidate_teacher, {})
+            if sum(1 for s in valid_slots if candidate_avail.get(s.key, True)) >= num_meetings:
+                assigned_teacher = candidate_teacher
+                teacher_avail = candidate_avail
 
-    if assigned_teacher is None:
-        warnings.append(SectionGenerationWarning(
-            subject_code=subject.subject_code,
-            message=(
-                f"No capable teacher with sufficient available slots for "
-                f"'{section_label}' ({num_meetings} meeting(s) needed). "
-                "Section created with teacher_id=None."
-            ),
-        ))
-        teacher_avail = {}
-
-    # Assign meeting slots greedily.
-    used_by_teacher: Set[str] = set()
-    used_globally: Set[str] = set()
-    meetings: List[Meeting] = []
-
-    for duration in meeting_hours_list:
-        slot = _pick_slot(
-            valid_slots, assigned_teacher, teacher_avail,
-            used_by_teacher, used_globally
-        )
-        slot_part = 1 if duration == 1 else None
-        if slot is None:
+        if assigned_teacher is None:
             warnings.append(SectionGenerationWarning(
                 subject_code=subject.subject_code,
                 message=(
-                    f"Could not find a valid slot for one meeting of "
-                    f"'{section_label}'. Meeting stored with slot_key=None."
+                    f"No capable teacher with sufficient available slots for "
+                    f"'{section_label}' ({num_meetings} meeting(s) needed). "
+                    "Section created with teacher_id=None."
                 ),
             ))
-            meetings.append(Meeting(slot_key="", duration_hours=duration, slot_part=slot_part))
-        else:
-            meetings.append(Meeting(slot_key=slot.key, duration_hours=duration, slot_part=slot_part))
-            used_by_teacher.add(slot.key)
-            used_globally.add(slot.key)
 
-    section = Section(
-        id=section_id_start,
-        subject_code=subject.subject_code,
-        label=section_label,
-        teacher_id=assigned_teacher,
-        capacity=subject.capacity,
-        meetings=meetings,
-        run_id=run_id,
-    )
-    result.sections.append(section)
+        used_by_teacher: Set[str] = set()
+        used_globally: Set[str] = set()
+        meetings: List[Meeting] = []
+        for duration in meeting_hours_list:
+            slot = _pick_slot(
+                valid_slots, assigned_teacher, teacher_avail,
+                used_by_teacher, used_globally
+            )
+            slot_part = 1 if duration == 1 else None
+            if slot is None:
+                warnings.append(SectionGenerationWarning(
+                    subject_code=subject.subject_code,
+                    message=(
+                        f"Could not find a valid slot for one meeting of "
+                        f"'{section_label}'. Meeting stored with slot_key=None."
+                    ),
+                ))
+                meetings.append(Meeting(slot_key="", duration_hours=duration, slot_part=slot_part))
+            else:
+                meetings.append(Meeting(slot_key=slot.key, duration_hours=duration, slot_part=slot_part))
+                used_by_teacher.add(slot.key)
+                used_globally.add(slot.key)
+
+        result.sections.append(Section(
+            id=section_id_start + section_number - 1,
+            subject_code=subject.subject_code,
+            label=section_label,
+            teacher_id=assigned_teacher,
+            capacity=subject.capacity,
+            meetings=meetings,
+            run_id=run_id,
+        ))
     return result
 
 
@@ -416,6 +408,7 @@ def generate_sections_for_run(
                 valid_slots=theory_slots,
                 capable_teacher_ids=capable,
                 teacher_availability_map=teacher_availability_map,
+                enrolled_count=enrolled,
                 section_id_start=next_id,
             )
         else:  # LAB
