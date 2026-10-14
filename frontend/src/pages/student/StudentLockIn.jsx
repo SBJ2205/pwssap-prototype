@@ -267,7 +267,10 @@ export default function StudentLockIn({ studentRoll, onLockInComplete, onNavigat
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
                     {subtags.map((subtag) => {
                       const subjects = electiveSubjects.filter(
-                        s => s.subject_tag === tag && s.subtag === subtag
+                        s => s.subject_tag === tag && (s.subtag || "")
+                          .split("|")
+                          .map(value => value.trim())
+                          .includes(subtag)
                       );
                       const isSelected = selectedSubtag === subtag;
 

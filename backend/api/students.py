@@ -84,7 +84,7 @@ def get_available_choices(roll_number: str, store: InMemoryStore = Depends(get_s
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    cb_tags = store.get_choice_based_tags()
+    cb_tags = store.get_choice_based_tags_for_semester(student.semester)
     sem_subjects = store.list_subjects(semester=student.semester)
 
     # Collect tags that are choice-based and present in this semester
@@ -142,7 +142,7 @@ def save_student_lock_in(
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    cb_tags = store.get_choice_based_tags()
+    cb_tags = store.get_choice_based_tags_for_semester(student.semester)
     sem_subjects = store.list_subjects(semester=student.semester)
     applicable_tags = {s.subject_tag for s in sem_subjects if s.subject_tag in cb_tags}
 

@@ -81,3 +81,10 @@ async def import_subjects(file: UploadFile = File(...), store: InMemoryStore = D
         "count": len(result.subjects),
         "semesters": semesters,
     }
+
+
+@router.delete("/admin/subjects", dependencies=[Depends(require_admin)])
+def clear_subject_catalog(store: InMemoryStore = Depends(get_store)):
+    """Clear the complete subject catalog before a replacement upload."""
+    cleared_count = store.clear_subjects()
+    return {"status": "cleared", "cleared_count": cleared_count}

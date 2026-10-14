@@ -63,13 +63,13 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
 
     lock_in_complete = 0
     students_lock_in = []
-    cb_tags = store.get_choice_based_tags()
     for s in students:
         is_complete = store.has_complete_lock_in(s.roll_number)
         if is_complete:
             lock_in_complete += 1
         locked = store.get_lock_in_for_student(s.roll_number)
         sem_subjects = store.list_subjects(semester=s.semester)
+        cb_tags = store.get_choice_based_tags_for_semester(s.semester)
         applicable_tags = sorted(list({sub.subject_tag for sub in sem_subjects if sub.subject_tag in cb_tags}))
         missing_tags = [t for t in applicable_tags if not locked.get(t)]
         students_lock_in.append({

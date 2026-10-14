@@ -97,6 +97,26 @@ class InMemoryStore:
     def delete_subject(self, code: str) -> None:
         self.subjects.pop(code, None)
 
+    def clear_subjects(self) -> int:
+        """Clear the catalog and dependent generated scheduling state.
+
+        Teachers and students remain available for the replacement catalog,
+        but old capabilities, sections, runs, choices, and assignments would
+        otherwise refer to subjects that no longer exist.
+        """
+        count = len(self.subjects)
+        self.subjects.clear()
+        self.teacher_capabilities.clear()
+        self.sections.clear()
+        self.runs.clear()
+        self.student_choice_selections.clear()
+        self.student_faculty_preferences.clear()
+        self.student_section_assignments.clear()
+        self.cycle_choice_configs.clear()
+        self._next_section_id = 1
+        self._next_run_id = 1
+        return count
+
     def list_subject_tags(self, semester: Optional[int] = None) -> List[str]:
         """Distinct subject_tag values currently in the catalog, optionally
         scoped to one semester. Used by the admin choice-tag configuration
@@ -122,6 +142,12 @@ class InMemoryStore:
         if self.cycle_choice_configs:
             return {tag for tag, is_cb in self.cycle_choice_configs.items() if is_cb}
         return {tag for tag, subtags in self.get_choice_groups().items() if subtags and tag.upper() != "CORE"}
+
+    def get_choice_based_tags_for_semester(self, semester: int) -> set:
+        """Return configured choice tags that have subtags in this semester."""
+        configured = self.get_choice_based_tags()
+        groups = self.get_choice_groups(semester)
+        return {tag for tag in configured if groups.get(tag)}
 
     # ── Teachers ───────────────────────────────────────────────────────────
     def list_teachers(self) -> List[Teacher]:
@@ -228,7 +254,7 @@ class InMemoryStore:
         student = self.get_student(roll_number)
         if not student:
             return False
-        cb_tags = self.get_choice_based_tags()
+        cb_tags = self.get_choice_based_tags_for_semester(student.semester)
         sem_subjects = self.list_subjects(semester=student.semester)
         applicable_tags = {s.subject_tag for s in sem_subjects if s.subject_tag in cb_tags}
         if not applicable_tags:
@@ -245,7 +271,7 @@ class InMemoryStore:
         student = self.get_student(roll_number)
         if not student:
             return []
-        cb_tags = self.get_choice_based_tags()
+        cb_tags = self.get_choice_based_tags_for_semester(student.semester)
         sem_subjects = self.list_subjects(semester=student.semester)
         lock_in = self.get_lock_in_for_student(roll_number)
         enrolled: List[Subject] = []
@@ -319,7 +345,7 @@ class InMemoryStore:
         if subject is None:
             return 0
 
-        cb_tags = self.get_choice_based_tags()
+        cb_tags = self.get_choice_based_tags_for_semester(subject.semester)
         semester_students = self.list_students(semester=subject.semester)
 
         if subject.subject_tag not in cb_tags:

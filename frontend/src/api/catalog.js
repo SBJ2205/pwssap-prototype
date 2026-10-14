@@ -81,6 +81,9 @@ export const importSubjects = (file) => {
   }).then(r => r.data);
 };
 
+// DELETE /admin/subjects — clears the catalog and dependent generated state.
+export const clearSubjects = () => client.delete("/admin/subjects").then(r => r.data);
+
 // POST /admin/students/import?run_id=N  (multipart form with CSV file)
 export const importStudents = (file, runId) => {
   const fd = new FormData();

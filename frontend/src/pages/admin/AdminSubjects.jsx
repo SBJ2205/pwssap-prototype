@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useMemo } from "react";
-import { getSubjects, importSubjects } from "../../api/catalog";
+import { clearSubjects, getSubjects, importSubjects } from "../../api/catalog";
 import { getCycleStatus, setCycleChoiceTags } from "../../api/cycle";
 import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
 import { downloadCsv, parseCsvText, SUBJECT_CSV_TEMPLATE } from "../../utils/csv";
@@ -84,6 +84,25 @@ export default function AdminSubjects({ refreshCycle, reload }) {
     }
   }
 
+  async function handleClearCatalog() {
+    const confirmed = window.confirm(
+      "Clear every subject from the catalog? This also removes generated sections, solver cycles, teacher capabilities, and elective configuration. Students and teachers will remain."
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    setUploadSuccess(null);
+    try {
+      const result = await clearSubjects();
+      setSubjects([]);
+      setUploadSuccess(`Cleared ${result.cleared_count} subject(s). Upload the replacement CSV to continue.`);
+      if (refreshCycle) await refreshCycle();
+      if (reload) reload();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    }
+  }
+
   const filteredSubjects = useMemo(() => {
     return subjects.filter(s => {
       if (selectedSemester !== "all" && s.semester !== Number(selectedSemester)) {
@@ -94,8 +113,9 @@ export default function AdminSubjects({ refreshCycle, reload }) {
         const matchesCode = s.subject_code.toLowerCase().includes(q);
         const matchesName = s.subject_name.toLowerCase().includes(q);
         const matchesTag = (s.subject_tag || "").toLowerCase().includes(q);
+        const matchesSubtag = (s.subtag || "").toLowerCase().includes(q);
         const matchesType = (s.type || "").toLowerCase().includes(q);
-        if (!matchesCode && !matchesName && !matchesTag && !matchesType) {
+        if (!matchesCode && !matchesName && !matchesTag && !matchesSubtag && !matchesType) {
           return false;
         }
       }
@@ -138,10 +158,27 @@ export default function AdminSubjects({ refreshCycle, reload }) {
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>Import Subjects via CSV</div>
             <div style={{ fontSize: 12, color: "#777" }}>
-              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>subject_code, subject_name, subject_tag, semester, type, weekly_hours, capacity</code>
+              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>subject_code, subject_name, subject_tag, subtag, semester, type, weekly_hours, capacity</code>
             </div>
           </div>
 
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            onClick={handleClearCatalog}
+            disabled={uploading || subjects.length === 0}
+            style={{
+              padding: "6px 12px",
+              background: uploading || subjects.length === 0 ? "#eee" : "#FCEBEB",
+              color: uploading || subjects.length === 0 ? "#aaa" : "#791F1F",
+              border: "1px solid #F7C1C1",
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: uploading || subjects.length === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            Clear All Subjects
+          </button>
           <button
             onClick={() => downloadCsv("subject_template.csv", SUBJECT_CSV_TEMPLATE)}
             style={{
@@ -159,6 +196,7 @@ export default function AdminSubjects({ refreshCycle, reload }) {
           >
             📥 Download Template CSV
           </button>
+          </div>
         </div>
 
         {/* File input & action */}
