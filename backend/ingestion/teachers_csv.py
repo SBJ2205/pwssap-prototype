@@ -97,9 +97,10 @@ def parse_teachers_csv(
                     errors.append("A subject load cannot be provided without a subject_code.")
                     continue
                 try:
-                    load = int(raw_load)
-                    if load <= 0:
+                    numeric_load = float(raw_load)
+                    if not numeric_load.is_integer() or numeric_load <= 0:
                         raise ValueError
+                    load = int(numeric_load)
                 except ValueError:
                     errors.append(f"Load for subject_code '{code}' must be a positive whole number.")
                     continue

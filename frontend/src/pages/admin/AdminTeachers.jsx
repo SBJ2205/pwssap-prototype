@@ -74,7 +74,7 @@ export default function AdminTeachers({ reload }) {
     reader.onload = evt => {
       const text = evt.target?.result;
       if (typeof text === "string") {
-        const parsed = parseCsvText(text, 10);
+        const parsed = parseCsvText(text, 1000);
         setPreviewData(parsed);
       }
     };
@@ -249,9 +249,9 @@ export default function AdminTeachers({ reload }) {
         {previewData && (
           <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6 }}>
-              CSV Preview (Showing first {previewData.rows.length} of {previewData.totalRows} data rows):
+              CSV Preview ({previewData.rows.length} data rows loaded):
             </div>
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ maxHeight: 320, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, background: "#faf9f6" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid #ddd" }}>
