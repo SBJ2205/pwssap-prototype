@@ -168,4 +168,4 @@ npm run build
 
 ## 📄 License
 
-Internal Department Prototype — Academic Year 2025–26.
+Internal Department Prototype — Academic Year 2026–27.
