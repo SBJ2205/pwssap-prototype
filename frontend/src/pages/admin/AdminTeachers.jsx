@@ -5,7 +5,7 @@ import { downloadCsv, parseCsvText, TEACHER_CSV_TEMPLATE } from "../../utils/csv
 import { td } from "../../constants";
 import { Card, PageHeader, InfoBox, MetricsRow } from "../../components/ui";
 
-export default function AdminTeachers({ reload }) {
+export default function AdminTeachers({ reload, setPage }) {
   const [teachers, setTeachers] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [capabilities, setCapabilities] = useState({}); // { [teacherId]: [subjectCode, ...] }
@@ -23,6 +23,7 @@ export default function AdminTeachers({ reload }) {
   // Filter & search
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState("all");
+  const [showSubjectNames, setShowSubjectNames] = useState(false);
 
   async function loadTeacherData() {
     setLoading(true);
@@ -180,31 +181,51 @@ export default function AdminTeachers({ reload }) {
             </div>
           </div>
 
-          <button
-            onClick={handleClearTeachers}
-            disabled={uploading || teachers.length === 0}
-            style={{ padding: "6px 12px", background: uploading || teachers.length === 0 ? "#eee" : "#FCEBEB", color: uploading || teachers.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || teachers.length === 0 ? "not-allowed" : "pointer" }}
-          >
-            Clear All Teachers
-          </button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={handleClearTeachers}
+              disabled={uploading || teachers.length === 0}
+              style={{ padding: "6px 12px", background: uploading || teachers.length === 0 ? "#eee" : "#FCEBEB", color: uploading || teachers.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || teachers.length === 0 ? "not-allowed" : "pointer" }}
+            >
+              Clear All Teachers
+            </button>
 
-          <button
-            onClick={() => downloadCsv("teachers_template.csv", TEACHER_CSV_TEMPLATE)}
-            style={{
-              padding: "6px 14px",
-              background: "#f1efe8",
-              border: "1px solid #d1cfc7",
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            📥 Download Template CSV
-          </button>
+            <button
+              onClick={() => downloadCsv("teachers_template.csv", TEACHER_CSV_TEMPLATE)}
+              style={{
+                padding: "6px 14px",
+                background: "#f1efe8",
+                border: "1px solid #d1cfc7",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              📥 Download Template CSV
+            </button>
+
+            {teachers.length > 0 && setPage && (
+              <button
+                onClick={() => setPage("admin-availability")}
+                style={{
+                  padding: "6px 14px",
+                  background: "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Next: Faculty Availability (Step 4) →
+              </button>
+            )}
+          </div>
         </div>
 
         {/* File input & action */}
@@ -237,8 +258,25 @@ export default function AdminTeachers({ reload }) {
 
         {/* Success message */}
         {uploadSuccess && (
-          <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12 }}>
-            ✓ {uploadSuccess}
+          <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <span>✓ {uploadSuccess}</span>
+            {setPage && (
+              <button
+                onClick={() => setPage("admin-availability")}
+                style={{
+                  background: "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Next: Faculty Availability (Step 4) →
+              </button>
+            )}
           </div>
         )}
 
@@ -302,21 +340,34 @@ export default function AdminTeachers({ reload }) {
       {/* Roster & Capabilities List */}
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-          {/* Subject Filter */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#666" }}>Filter by Subject:</span>
-            <select
-              value={selectedSubjectFilter}
-              onChange={e => setSelectedSubjectFilter(e.target.value)}
-              style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12 }}
-            >
-              <option value="all">All Subjects</option>
-              {subjects.map(s => (
-                <option key={s.subject_code} value={s.subject_code}>
-                  {s.subject_code} — {s.subject_name}
-                </option>
-              ))}
-            </select>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+            {/* Subject Filter */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#666" }}>Filter by Subject:</span>
+              <select
+                value={selectedSubjectFilter}
+                onChange={e => setSelectedSubjectFilter(e.target.value)}
+                style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12 }}
+              >
+                <option value="all">All Subjects</option>
+                {subjects.map(s => (
+                  <option key={s.subject_code} value={s.subject_code}>
+                    {s.subject_code} — {s.subject_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Toggle Subject Names */}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#475569", cursor: "pointer", userSelect: "none" }}>
+              <input
+                type="checkbox"
+                checked={showSubjectNames}
+                onChange={e => setShowSubjectNames(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <span>Show subject names</span>
+            </label>
           </div>
 
           {/* Search box */}
@@ -348,8 +399,8 @@ export default function AdminTeachers({ reload }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: "#f9f8f5", borderBottom: "1.5px solid #e0ddd8" }}>
-                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555", width: 120 }}>Teacher ID</th>
-                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555", width: 200 }}>Name</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555", width: 110 }}>Teacher ID</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555", width: 190 }}>Name</th>
                   <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Subject Capabilities</th>
                 </tr>
               </thead>
@@ -371,28 +422,54 @@ export default function AdminTeachers({ reload }) {
                             No capabilities assigned
                           </span>
                         ) : (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                             {caps.map(code => {
                               const s = subjectMap[code];
+                              const maxLoad = loads[code];
                               return (
                                 <span
                                   key={code}
-                                  title={s ? `${s.subject_name} (${s.type}, Sem ${s.semester})` : code}
+                                  title={s ? `${s.subject_code} — ${s.subject_name}\nType: ${s.type} | Semester ${s.semester}\nMax Weekly Load: ${maxLoad != null ? `${maxLoad}h/week` : "Not specified"}` : `${code}${maxLoad != null ? ` (max ${maxLoad}h/wk)` : ""}`}
                                   style={{
                                     display: "inline-flex",
                                     alignItems: "center",
-                                    gap: 4,
-                                    background: "#F4F8FC",
-                                    border: "1px solid #B5D4F4",
+                                    gap: 6,
+                                    background: "#F8FAFC",
+                                    border: "1px solid #CBD5E1",
                                     borderRadius: 6,
-                                    padding: "2px 8px",
-                                    fontSize: 11,
-                                    color: "#0C447C",
+                                    padding: "3px 8px",
+                                    fontSize: 12,
+                                    boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                    whiteSpace: "nowrap",
                                   }}
                                 >
-                                  <strong>{code}</strong>
-                                  {loads[code] != null && <span style={{ color: "#185FA5", fontWeight: 600 }}>max {loads[code]}h/wk</span>}
-                                  {s && <span style={{ color: "#666" }}>{s.subject_name}</span>}
+                                  <span style={{ fontWeight: 700, color: "#0F172A", fontFamily: "monospace", fontSize: 12 }}>
+                                    {code}
+                                  </span>
+                                  {maxLoad != null && (
+                                    <span style={{
+                                      background: "#E0F2FE",
+                                      color: "#0369A1",
+                                      fontWeight: 600,
+                                      padding: "1px 6px",
+                                      borderRadius: 4,
+                                      fontSize: 11,
+                                    }}>
+                                      {maxLoad}h/wk
+                                    </span>
+                                  )}
+                                  {showSubjectNames && s && (
+                                    <span style={{
+                                      color: "#64748B",
+                                      fontSize: 11,
+                                      maxWidth: 160,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}>
+                                      {s.subject_name}
+                                    </span>
+                                  )}
                                 </span>
                               );
                             })}

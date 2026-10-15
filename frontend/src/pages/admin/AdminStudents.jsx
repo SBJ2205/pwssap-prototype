@@ -15,6 +15,7 @@ import StudentLockInOverrideModal from "../../components/StudentLockInOverrideMo
 
 export default function AdminStudents({
   reload,
+  setPage,
 }) {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -186,31 +187,54 @@ export default function AdminStudents({
             </div>
           </div>
 
-          <button
-            onClick={handleClearStudents}
-            disabled={uploading || students.length === 0}
-            style={{ padding: "6px 12px", background: uploading || students.length === 0 ? "#eee" : "#FCEBEB", color: uploading || students.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || students.length === 0 ? "not-allowed" : "pointer" }}
-          >
-            Clear All Students
-          </button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={handleClearStudents}
+              disabled={uploading || students.length === 0}
+              style={{ padding: "6px 12px", background: uploading || students.length === 0 ? "#eee" : "#FCEBEB", color: uploading || students.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || students.length === 0 ? "not-allowed" : "pointer" }}
+            >
+              Clear All Students
+            </button>
 
-          <button
-            onClick={() => {
-              const content = generateStudentCsvTemplate();
-              downloadCsv("students_template.csv", content);
-            }}
-            style={{
-              padding: "5px 12px",
-              background: "#fff",
-              border: "1px solid #d1cfc7",
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 500,
-              cursor: "pointer",
-            }}
-          >
-            ↓ Download Template
-          </button>
+            <button
+              onClick={() => {
+                const content = generateStudentCsvTemplate();
+                downloadCsv("students_template.csv", content);
+              }}
+              style={{
+                padding: "6px 12px",
+                background: "#fff",
+                border: "1px solid #d1cfc7",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              📥 Download Template CSV
+            </button>
+
+            {students.length > 0 && setPage && (
+              <button
+                onClick={() => setPage("admin-subjects")}
+                style={{
+                  padding: "6px 14px",
+                  background: "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Next: Subject Catalog (Step 2) →
+              </button>
+            )}
+          </div>
         </div>
 
         {/* File input & action */}
@@ -243,8 +267,25 @@ export default function AdminStudents({
 
         {/* Success message */}
         {uploadSuccess && (
-          <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12 }}>
-            ✓ {uploadSuccess}
+          <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <span>✓ {uploadSuccess}</span>
+            {setPage && (
+              <button
+                onClick={() => setPage("admin-subjects")}
+                style={{
+                  background: "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Next: Subject Catalog & Electives (Step 2) →
+              </button>
+            )}
           </div>
         )}
 

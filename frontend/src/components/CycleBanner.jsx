@@ -6,14 +6,12 @@ export default function CycleBanner({ cycleStatus, onInitializeCycle, onNavigate
   const {
     active_semesters = [],
     total_subjects = 0,
-    total_students = 0,
-    total_teachers = 0,
     lock_in_complete_count = 0,
     lock_in_total_students = 0,
     current_run,
   } = cycleStatus;
 
-  const hasCatalogData = total_subjects > 0;
+  const hasCatalogData = total_subjects > 0 || active_semesters.length > 0;
   const runStatus = current_run?.status?.toUpperCase();
 
   const statusColor =
@@ -45,16 +43,6 @@ export default function CycleBanner({ cycleStatus, onInitializeCycle, onNavigate
               ? `Semesters ${active_semesters.join(", ")}`
               : "No Semesters Active"}
           </Badge>
-        </div>
-
-        <div style={{ height: 16, width: 1, background: "#cbd5e1" }} />
-
-        <div style={{ fontSize: 12, color: "#64748b", display: "flex", gap: 10, alignItems: "center" }}>
-          <span><strong>{total_subjects}</strong> subjects</span>
-          <span>•</span>
-          <span><strong>{total_students}</strong> students</span>
-          <span>•</span>
-          <span><strong>{total_teachers}</strong> teachers</span>
         </div>
 
         {lock_in_total_students > 0 && (

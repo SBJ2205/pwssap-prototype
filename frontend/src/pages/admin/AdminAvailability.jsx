@@ -5,7 +5,7 @@ import { apiErrorMessage } from "../../api/client";
 import { DAYS, SLOT_NUMBERS, SLOT_LABELS, SLOT_SHORT, getSlotRestriction, slotKey } from "../../constants";
 import { Card, PageHeader, InfoBox } from "../../components/ui";
 
-export default function AdminAvailability({ teachers: initialTeachers = [] }) {
+export default function AdminAvailability({ teachers: initialTeachers = [], setPage }) {
   const [teachers, setTeachers] = useState(initialTeachers);
   const [selectedTeacherId, setSelectedTeacherId] = useState("");
   const [teacherSearch, setTeacherSearch] = useState("");
@@ -122,10 +122,30 @@ export default function AdminAvailability({ teachers: initialTeachers = [] }) {
 
   return (
     <div>
-      <PageHeader
-        title="Teacher Availability Constraints"
-        sub="Hard constraints specifying which weekly timeslots faculty members cannot be scheduled into."
-      />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+        <PageHeader
+          title="Teacher Availability Constraints"
+          sub="Hard constraints specifying which weekly timeslots faculty members cannot be scheduled into."
+        />
+        {setPage && (
+          <button
+            onClick={() => setPage("admin-solver")}
+            style={{
+              padding: "8px 16px",
+              background: "#185FA5",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              marginBottom: 16,
+            }}
+          >
+            Next: Proceed to Solver (Step 6) →
+          </button>
+        )}
+      </div>
 
       <InfoBox title="Hard Constraint Rule">
         Unlike student preferences, <strong>teacher availability is a strict, hard constraint</strong>.

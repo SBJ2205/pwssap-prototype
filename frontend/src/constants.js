@@ -69,9 +69,8 @@ export const ALL_SEMESTERS = [...ODD_SEMESTERS, ...EVEN_SEMESTERS].sort((a, b) =
 export const NAV = [
   // Admin pages
   { key: "admin-dashboard",    label: "Dashboard",           color: "#185FA5", group: "admin" },
-  { key: "admin-runs",         label: "Solver Cycle",        color: "#1D9E75", group: "admin" },
-  { key: "admin-subjects",     label: "Subjects",            color: "#7F77DD", group: "admin" },
   { key: "admin-students",     label: "Students",            color: "#C2478D", group: "admin" },
+  { key: "admin-subjects",     label: "Subjects",            color: "#7F77DD", group: "admin" },
   { key: "admin-teachers",     label: "Teachers",            color: "#D85A30", group: "admin" },
   { key: "admin-availability", label: "Availability",        color: "#BA7517", group: "admin" },
   { key: "admin-solver",       label: "Solver",              color: "#1D9E75", group: "admin" },

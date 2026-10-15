@@ -100,23 +100,23 @@ export default function AdminDashboard({
   // Setup checklist items
   const steps = [
     {
-      id: "subjects",
-      title: "1. Ingest Subject Catalog",
-      done: subjects.length > 0,
-      desc: subjects.length > 0
-        ? `${subjects.length} subjects imported across semester(s): ${cycleStatus?.active_semesters?.join(", ") || "–"}`
-        : "Upload subject CSV with code, tags, subtags, capacity, and weekly hours.",
-      actionLabel: "Subject Catalog →",
-      pageKey: "admin-subjects",
+      id: "students",
+      title: "1. Take the Students",
+      done: students.length > 0,
+      desc: students.length > 0
+        ? `${students.length} students enrolled across active semesters`
+        : "Upload clean student roster (roll_number, name, semester).",
+      actionLabel: "Student Roster →",
+      pageKey: "admin-students",
     },
     {
-      id: "choice-tags",
-      title: "2. Configure Elective Choice Tags",
-      done: choiceTags.length > 0,
-      desc: choiceTags.length > 0
-        ? `${choiceTags.length} elective tag(s) configured (${choiceTags.map(c => c.tag).join(", ")})`
-        : "Mark which subject tags are student electives (e.g. professional_elective_1, open_elective).",
-      actionLabel: "Configure Electives →",
+      id: "subjects",
+      title: "2. Ingest Subject Catalog, Elective Choice & Allocations",
+      done: subjects.length > 0 && choiceTags.length > 0,
+      desc: subjects.length > 0
+        ? `${subjects.length} subjects imported across semester(s): ${cycleStatus?.active_semesters?.join(", ") || "–"}${choiceTags.length > 0 ? ` (${choiceTags.length} elective tag(s) configured)` : ""}`
+        : "Upload subject CSV, configure elective choice tags, and upload elective allocations CSV.",
+      actionLabel: "Subject Catalog →",
       pageKey: "admin-subjects",
     },
     {
@@ -131,37 +131,27 @@ export default function AdminDashboard({
     },
     {
       id: "availability",
-      title: "4. Set Faculty Availability Constraints",
+      title: "4. Faculty Availability",
       done: teachers.length > 0,
       desc: "Specify blocked timeslots for faculty (hard constraints).",
       actionLabel: "Availability Matrix →",
       pageKey: "admin-availability",
     },
     {
-      id: "students",
-      title: "5. Import Student Cohorts",
-      done: students.length > 0,
-      desc: students.length > 0
-        ? `${students.length} students enrolled across active semesters`
-        : "Upload clean student roster (roll_number, name, semester).",
-      actionLabel: "Student Roster →",
-      pageKey: "admin-students",
-    },
-    {
       id: "lock-in",
-      title: "6. Student Elective Lock-In",
+      title: "5. Student Elective Lock-In / Override",
       done: (cycleStatus?.lock_in_total_students > 0) && (cycleStatus?.lock_in_complete_count === cycleStatus?.lock_in_total_students),
       desc: cycleStatus?.lock_in_total_students > 0
         ? (cycleStatus.lock_in_complete_count === cycleStatus.lock_in_total_students
             ? `All ${cycleStatus.lock_in_total_students} students have locked in their elective choices!`
             : `${cycleStatus.lock_in_complete_count}/${cycleStatus.lock_in_total_students} students have locked in their elective choices (${pendingStudents.length} pending).`)
-        : "Students lock in elective subtags to unlock time and faculty preference submission.",
+        : "Inspect and override individual student elective allocations before solving.",
       actionLabel: showLockInBreakdown ? "Hide Choices ▲" : "Inspect & Override Choices ▼",
       pageKey: "admin-students",
     },
     {
       id: "solver",
-      title: "7. Department Timetable Solver",
+      title: "6. Solver",
       done: isPublished,
       desc: isPublished
         ? "Timetable successfully solved and published for all active semesters!"
@@ -570,74 +560,14 @@ export default function AdminDashboard({
         onNavigateToTeachers={() => setPage && setPage("admin-teachers")}
       />
 
-      {/* Quick Action Navigation Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
-        {[
-          {
-            title: "Runs & Semesters",
-            desc: "Create runs and configure choice tag mappings.",
-            page: "admin-runs",
-            icon: "⚙",
-            color: "#1D9E75",
-          },
-          {
-            title: "Subjects Catalog",
-            desc: "Upload subject CSV, manage capacities and slots.",
-            page: "admin-subjects",
-            icon: "📚",
-            color: "#7F77DD",
-          },
-          {
-            title: "Student Roster",
-            desc: "Upload student CSV, inspect elective & time choices.",
-            page: "admin-students",
-            icon: "🎓",
-            color: "#C2478D",
-          },
-          {
-            title: "Faculty & Capabilities",
-            desc: "Upload teacher CSV and inspect qualified courses.",
-            page: "admin-teachers",
-            icon: "👨‍🏫",
-            color: "#D85A30",
-          },
-          {
-            title: "Solver & Execution",
-            desc: "Generate sections and solve with CP-SAT engine.",
-            page: "admin-solver",
-            icon: "⚡",
-            color: "#185FA5",
-          },
-          {
-            title: "Published Timetable",
-            desc: "View full department weekly schedule matrix.",
-            page: "admin-timetable",
-            icon: "📅",
-            color: "#BA7517",
-          },
-        ].map(card => (
-          <div
-            key={card.page}
-            onClick={() => setPage && setPage(card.page)}
-            style={{
-              background: "#fff",
-              border: "1px solid #e5e3dc",
-              borderRadius: 10,
-              padding: "16px",
-              cursor: "pointer",
-              transition: "transform 0.1s, box-shadow 0.1s",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-              <span style={{ fontSize: 20 }}>{card.icon}</span>
-              <span style={{ fontWeight: 700, fontSize: 14, color: "#222" }}>{card.title}</span>
-            </div>
-            <p style={{ fontSize: 12, color: "#777", margin: 0, lineHeight: 1.5 }}>
-              {card.desc}
-            </p>
-          </div>
-        ))}
-      </div>
+      {/* Student Elective Allocations Batch Import Modal */}
+      <ElectiveAllocationsModal
+        isOpen={showAllocationsModal}
+        onClose={() => setShowAllocationsModal(false)}
+        cycleData={cycleStatus}
+        refreshCycle={refreshCycle}
+        onNavigateToTeachers={() => setPage && setPage("admin-teachers")}
+      />
     </div>
   );
 }
