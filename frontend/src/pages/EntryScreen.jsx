@@ -34,7 +34,7 @@ export default function EntryScreen({ onLogin }) {
       // Admin special keyword.
       if (input.toLowerCase() === "admin") {
         setApiRole("admin");
-        onLogin("admin", "admin");
+        onLogin("admin", "admin", "Administrator");
         return;
       }
 
@@ -50,7 +50,7 @@ export default function EntryScreen({ onLogin }) {
         s => s.roll_number.toLowerCase() === input.toLowerCase()
       );
       if (student) {
-        onLogin("student", student.roll_number);
+        onLogin("student", student.roll_number, student.name);
         return;
       }
 
@@ -67,7 +67,7 @@ export default function EntryScreen({ onLogin }) {
       );
       if (teacher) {
         setApiRole("teacher");
-        onLogin("teacher", teacher.teacher_id);
+        onLogin("teacher", teacher.teacher_id, teacher.teacher_name);
         return;
       }
 

@@ -162,6 +162,28 @@ export default function App() {
         setTeachers(t);
         if (r) setRuns(r);
         if (cyc) setCycleStatus(cyc);
+
+        // Auto-resolve session.name if missing (e.g., from existing localStorage or reload)
+        setSession(prev => {
+          if (!prev) return prev;
+          if (prev.name) return prev;
+          let resolvedName = null;
+          if (prev.role === "admin") {
+            resolvedName = "Administrator";
+          } else if (prev.role === "student" && s) {
+            const match = s.find(st => st.roll_number?.toLowerCase() === prev.identity?.toLowerCase());
+            if (match) resolvedName = match.name;
+          } else if (prev.role === "teacher" && t) {
+            const match = t.find(tch => tch.teacher_id?.toLowerCase() === prev.identity?.toLowerCase());
+            if (match) resolvedName = match.teacher_name;
+          }
+          if (resolvedName && resolvedName !== prev.name) {
+            const updated = { ...prev, name: resolvedName };
+            saveSession(updated);
+            return updated;
+          }
+          return prev;
+        });
       })
       .catch(e => {
         if (!cancelled) setCatalogError(e.message || "Failed to load catalog.");
@@ -180,8 +202,10 @@ export default function App() {
     }
   }, [session, refreshCycle]);
 
-  async function login(role, identity) {
-    const s = { role, identity };
+  async function login(role, identity, name = null) {
+    let resolvedName = name;
+    if (!resolvedName && role === "admin") resolvedName = "Administrator";
+    const s = { role, identity, name: resolvedName };
     saveSession(s);
     setSession(s);
     if (role === "student") {

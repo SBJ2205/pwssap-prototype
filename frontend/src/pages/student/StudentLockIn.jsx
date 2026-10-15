@@ -7,7 +7,7 @@ import {
 import { apiErrorMessage } from "../../api/client";
 import { Badge } from "../../components/ui";
 
-export default function StudentLockIn({ studentRoll, onNavigate }) {
+export default function StudentLockIn({ studentRoll, onNavigate, session }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -68,7 +68,7 @@ export default function StudentLockIn({ studentRoll, onNavigate }) {
               Elective Course Lock-In
             </h1>
             <p style={{ margin: 0, fontSize: 14, color: "#64748b" }}>
-              Roll Number: <strong>{studentRoll}</strong> · Semester: <strong>{semester ?? "–"}</strong>
+              Signed in as: <strong>{session?.name || studentRoll}</strong> · Roll: <strong>{studentRoll}</strong> · Semester: <strong>{semester ?? "–"}</strong>
             </p>
           </div>
           <div>

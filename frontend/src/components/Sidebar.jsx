@@ -7,9 +7,11 @@ const ROLE_META = {
 };
 
 export default function Sidebar({ session, page, setPage, onLogout }) {
-  const { role, identity } = session;
+  const { role, identity, name } = session;
   const roleItems = NAV.filter(n => n.group === role);
   const rm = ROLE_META[role] || ROLE_META.admin;
+  const displayName = name || (role === "admin" ? "Administrator" : identity);
+  const subLabel = role === "admin" ? "Admin Panel" : `${identity} · ${rm.label}`;
 
   return (
     <div className="app-sidebar" style={{
@@ -50,13 +52,19 @@ export default function Sidebar({ session, page, setPage, onLogout }) {
             width: 8, height: 8, borderRadius: "50%",
             background: rm.color, flexShrink: 0,
           }} />
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 600, fontSize: 12, color: rm.color }}>{rm.label}</div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{
+              fontWeight: 600, fontSize: 13, color: "#111",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }} title={displayName}>
+              {displayName}
+            </div>
             <div style={{
               fontSize: 11, color: "#666",
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              marginTop: 1,
             }}>
-              {identity}
+              {subLabel}
             </div>
           </div>
         </div>

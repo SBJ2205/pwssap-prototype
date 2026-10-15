@@ -112,11 +112,13 @@ export default function StudentFacultyPrefs({ session, onNavigate, setPage }) {
     </div>
   );
 
+  const studentName = session?.name || rollNumber;
+
   return (
     <div>
       <PageHeader
         title="Faculty Preferences"
-        sub="Optional secondary ranking, done subject by subject. Only used when multiple teachers are equally good on time."
+        sub={`Signed in as ${studentName} (${rollNumber}) · Optional secondary ranking, done subject by subject.`}
       />
 
       <InfoBox title="How does this work?">

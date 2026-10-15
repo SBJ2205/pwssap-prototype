@@ -186,11 +186,13 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
     </div>
   );
 
+  const studentName = session?.name || rollNumber;
+
   return (
     <div>
       <PageHeader
         title="Time Preferences"
-        sub="Rate each time slot — the solver assigns your classes to slots you like most."
+        sub={`Signed in as ${studentName} (${rollNumber}) · Rate each time slot — the solver assigns your classes to slots you like most.`}
       />
 
       <InfoBox title="How does this work?">
