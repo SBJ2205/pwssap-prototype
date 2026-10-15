@@ -5,9 +5,11 @@ capability views — mirrors api/subjects.py and api/students.py).
 CSV parsing lives in ingestion/teachers_csv.py; this module only handles
 HTTP framing and talks to the store.
 """
+import csv
+import io
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
@@ -153,16 +155,26 @@ def get_teacher_timetable(
     for section in assigned_sections:
         subject = store.get_subject(section.subject_code)
         enrolled = store.enrolled_students_for_section(section.id)
+        roster = []
+        for roll in sorted(enrolled):
+            stu = store.get_student(roll)
+            roster.append({
+                "roll_number": roll,
+                "name": stu.name if stu else "Unknown",
+                "semester": stu.semester if stu else None,
+                "email": getattr(stu, "email", None),
+            })
         schedule.append({
             "section_id": section.id,
             "run_id": section.run_id,
             "subject_code": section.subject_code,
             "subject_name": subject.subject_name if subject else None,
-            "subject_type": subject.type.value if subject else None,
+            "subject_type": (subject.type.value if hasattr(subject.type, "value") else str(subject.type)) if subject else None,
             "section_label": section.label,
             "capacity": section.capacity,
             "enrolled_count": len(enrolled),
             "enrolled_students": enrolled,
+            "enrolled_roster": roster,
             "meetings": [_enrich_meeting(m) for m in section.meetings],
         })
 
@@ -175,3 +187,105 @@ def get_teacher_timetable(
         "section_count": len(schedule),
         "schedule": schedule,
     }
+
+
+@router.get("/teachers/{teacher_id}/sections/{section_id}/roster.csv")
+def download_section_roster_csv(
+    teacher_id: str,
+    section_id: int,
+    store: InMemoryStore = Depends(get_store),
+):
+    """Download the enrolled student roster for a specific section as a CSV file.
+
+    Format: roll_number,student_name,semester
+    """
+    teacher = store.get_teacher(teacher_id)
+    if teacher is None:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    section = store.get_section(section_id)
+    if section is None or section.teacher_id != teacher_id:
+        raise HTTPException(status_code=404, detail="Section not found or not assigned to this teacher")
+
+    enrolled = store.enrolled_students_for_section(section_id)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["roll_number", "student_name", "semester"])
+    for roll in sorted(enrolled):
+        stu = store.get_student(roll)
+        writer.writerow([roll, stu.name if stu else "Unknown", stu.semester if stu else ""])
+
+    filename = f"{section.label}_roster.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/teachers/{teacher_id}/timetable.csv")
+def download_teacher_timetable_csv(
+    teacher_id: str,
+    run_id: Optional[int] = Query(default=None, description="Scope to a specific run"),
+    store: InMemoryStore = Depends(get_store),
+):
+    """Download the complete weekly schedule for a teacher as a CSV file."""
+    teacher = store.get_teacher(teacher_id)
+    if teacher is None:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    data = get_teacher_timetable(teacher_id=teacher_id, run_id=run_id, store=store)
+    schedule = data.get("schedule", [])
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "day",
+        "start_time",
+        "end_time",
+        "duration_hours",
+        "subject_code",
+        "subject_name",
+        "subject_type",
+        "section_label",
+        "enrolled_count",
+    ])
+
+    rows = []
+    for sec in schedule:
+        for m in sec.get("meetings", []):
+            if m.get("slot_key"):
+                rows.append({
+                    "day": m.get("day") or "",
+                    "start_time": m.get("start_time") or "",
+                    "end_time": m.get("end_time") or "",
+                    "duration_hours": m.get("duration_hours") or 2,
+                    "subject_code": sec.get("subject_code") or "",
+                    "subject_name": sec.get("subject_name") or "",
+                    "subject_type": sec.get("subject_type") or "",
+                    "section_label": sec.get("section_label") or "",
+                    "enrolled_count": sec.get("enrolled_count") or 0,
+                })
+
+    day_order = {"Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5}
+    rows.sort(key=lambda r: (day_order.get(r["day"], 99), r["start_time"]))
+
+    for r in rows:
+        writer.writerow([
+            r["day"],
+            r["start_time"],
+            r["end_time"],
+            r["duration_hours"],
+            r["subject_code"],
+            r["subject_name"],
+            r["subject_type"],
+            r["section_label"],
+            r["enrolled_count"],
+        ])
+
+    filename = f"{teacher_id}_timetable.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

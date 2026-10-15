@@ -438,6 +438,52 @@ def solve(inp: SolverInput) -> SolverResult:
                     if c_terms and e_terms:
                         m1.add(sum(c_terms) + sum(e_terms) <= 1)
 
+    # Constraint 4c: Elective theory and elective labs of the same track cannot overlap for the corresponding batch
+    for sem in all_semesters:
+        sem_stags = {stag for (s_sem, stag, _) in list(elective_theory_by_subtag.keys()) + list(elective_lab_by_subtag.keys()) if s_sem == sem}
+        for stag in sem_stags:
+            stag_divs = [div for (s_sem, s_tag, div) in elective_theory_by_subtag.keys() if s_sem == sem and s_tag == stag]
+            stag_batches = [b for (s_sem, s_tag, b) in elective_lab_by_subtag.keys() if s_sem == sem and s_tag == stag]
+            if stag_divs and stag_batches:
+                n_d = max(stag_divs)
+                n_b = max(stag_batches)
+                for b in stag_batches:
+                    mapped_div = min(n_d, max(1, 1 + (b - 1) * n_d // n_b))
+                    e_th = elective_theory_by_subtag.get((sem, stag, mapped_div), [])
+                    e_lb = elective_lab_by_subtag.get((sem, stag, b), [])
+                    if e_th and e_lb:
+                        for sk in all_slot_keys:
+                            for part in (1, 2):
+                                th_terms = [period_active[(sid, mi, slot_indices[sid][sk], part)] for sid, mi in e_th if sk in slot_indices[sid]]
+                                lb_terms = [period_active[(sid, mi, slot_indices[sid][sk], part)] for sid, mi in e_lb if sk in slot_indices[sid]]
+                                if th_terms and lb_terms:
+                                    m1.add(sum(th_terms) + sum(lb_terms) <= 1)
+
+    # Constraint 4d: Elective theory in division k cannot overlap with common/core labs of that division
+    for sem in all_semesters:
+        sem_divs = [div for (s_sem, div) in core_theory_tracks.keys() if s_sem == sem]
+        sem_batches = [b for (s_sem, b) in lab_batches.keys() if s_sem == sem]
+        if sem_divs and sem_batches:
+            num_divs = max(sem_divs)
+            num_batches = max(sem_batches)
+            for b in sem_batches:
+                div_k = min(num_divs, max(1, 1 + (b - 1) * num_divs // num_batches))
+                common_labs = [
+                    m for m in lab_batches.get((sem, b), [])
+                    if not inp.subject_subtags.get(section_by_id[m[0]].subject_code)
+                ]
+                if not common_labs:
+                    continue
+                # For each elective track in this semester, ensure its theory in div_k does not clash with common labs in batch b
+                for (s_sem, stag, e_div), e_meets in elective_theory_by_subtag.items():
+                    if s_sem == sem and e_div == div_k and e_meets:
+                        for sk in all_slot_keys:
+                            for part in (1, 2):
+                                e_terms = [period_active[(sid, mi, slot_indices[sid][sk], part)] for sid, mi in e_meets if sk in slot_indices[sid]]
+                                l_terms = [period_active[(sid, mi, slot_indices[sid][sk], part)] for sid, mi in common_labs if sk in slot_indices[sid]]
+                                if e_terms and l_terms:
+                                    m1.add(sum(e_terms) + sum(l_terms) <= 1)
+
     # Constraint 5: Cross-Division Shared Electives (e.g. MDM in Sem 4)
     # A subject is a cross-division shared elective if it is a pure theory elective with no corresponding lab
     # and has fewer sections than the semester's core theory divisions.
@@ -541,6 +587,7 @@ def solve(inp: SolverInput) -> SolverResult:
     solver1 = cp_model.CpSolver()
     solver1.parameters.max_time_in_seconds = max(1.0, min(inp.time_limit_seconds * 0.5, 30.0))
     solver1.parameters.num_workers = 0
+    solver1.parameters.random_seed = 42
 
     t0_stage1 = time.monotonic()
     status1 = solver1.solve(m1)
@@ -753,16 +800,18 @@ def solve(inp: SolverInput) -> SolverResult:
     rem_time = max(1.0, inp.time_limit_seconds - stage1_elapsed)
     solver2 = cp_model.CpSolver()
     solver2.parameters.num_workers = 0
+    solver2.parameters.random_seed = 42
 
     if inp.feasibility_only or not obj_terms:
         solver2.parameters.max_time_in_seconds = rem_time
         solver2.parameters.stop_after_first_solution = True
         status2 = solver2.solve(m2)
     else:
-        # Two-phase solve: first obtain a guaranteed valid assignment via feasibility pass (<5s)
+        # Two-phase solve: first obtain a guaranteed valid assignment via feasibility pass
         solver2_feas = cp_model.CpSolver()
-        solver2_feas.parameters.max_time_in_seconds = min(10.0, max(2.0, rem_time * 0.4))
+        solver2_feas.parameters.max_time_in_seconds = min(20.0, max(5.0, rem_time * 0.75))
         solver2_feas.parameters.num_workers = 0
+        solver2_feas.parameters.random_seed = 42
         solver2_feas.parameters.stop_after_first_solution = True
         status_feas = solver2_feas.solve(m2)
 

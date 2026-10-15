@@ -62,3 +62,17 @@ export const getTeacherTimetable = (teacherId, runId) => {
   const params = runId != null ? { run_id: runId } : {};
   return client.get(`/teachers/${teacherId}/timetable`, { params }).then(r => r.data);
 };
+
+export const downloadSectionRosterCsv = (teacherId, sectionId) => {
+  return client.get(`/teachers/${teacherId}/sections/${sectionId}/roster.csv`, {
+    responseType: "blob",
+  }).then(r => r.data);
+};
+
+export const downloadTeacherTimetableCsv = (teacherId, runId) => {
+  const params = runId != null ? { run_id: runId } : {};
+  return client.get(`/teachers/${teacherId}/timetable.csv`, {
+    params,
+    responseType: "blob",
+  }).then(r => r.data);
+};
