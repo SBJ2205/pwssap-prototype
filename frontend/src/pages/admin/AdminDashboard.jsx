@@ -5,6 +5,7 @@ import { apiErrorMessage } from "../../api/client";
 import { Card, PageHeader, InfoBox, MetricsRow, Badge } from "../../components/ui";
 import CycleBanner from "../../components/CycleBanner";
 import StudentLockInOverrideModal from "../../components/StudentLockInOverrideModal";
+import ElectiveAllocationsModal from "../../components/ElectiveAllocationsModal";
 
 export default function AdminDashboard({
   cycleStatus,
@@ -19,6 +20,7 @@ export default function AdminDashboard({
   const [showLockInBreakdown, setShowLockInBreakdown] = useState(false);
   const [lockInFilter, setLockInFilter] = useState("all");
   const [overrideModalStudent, setOverrideModalStudent] = useState(null);
+  const [showAllocationsModal, setShowAllocationsModal] = useState(false);
   const [autoLocking, setAutoLocking] = useState(false);
   const [autoLockMsg, setAutoLockMsg] = useState(null);
 
@@ -370,6 +372,26 @@ export default function AdminDashboard({
                     </div>
 
                     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllocationsModal(true)}
+                        style={{
+                          padding: "4px 10px",
+                          background: "#0284c7",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: 6,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                      >
+                        📥 Bulk CSV Allocations
+                      </button>
+
                       {pendingStudents.length > 0 && (
                         <button
                           onClick={handleAutoLockIn}
@@ -537,6 +559,15 @@ export default function AdminDashboard({
         onSuccess={() => {
           if (refreshCycle) refreshCycle();
         }}
+      />
+
+      {/* Student Elective Allocations Batch Import Modal */}
+      <ElectiveAllocationsModal
+        isOpen={showAllocationsModal}
+        onClose={() => setShowAllocationsModal(false)}
+        cycleData={cycleStatus}
+        refreshCycle={refreshCycle}
+        onNavigateToTeachers={() => setPage && setPage("admin-teachers")}
       />
 
       {/* Quick Action Navigation Grid */}

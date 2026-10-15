@@ -5,11 +5,13 @@ import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
 import { downloadCsv, parseCsvText, SUBJECT_CSV_TEMPLATE } from "../../utils/csv";
 import { ALL_SEMESTERS, td } from "../../constants";
 import { Card, PageHeader, Badge, InfoBox, MetricsRow } from "../../components/ui";
+import ElectiveAllocationsModal from "../../components/ElectiveAllocationsModal";
 
-export default function AdminSubjects({ refreshCycle, reload }) {
+export default function AdminSubjects({ refreshCycle, reload, setPage }) {
   const [subjects, setSubjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showAllocationsModal, setShowAllocationsModal] = useState(false);
 
   // File upload state
   const [selectedFile, setSelectedFile] = useState(null);
@@ -295,10 +297,19 @@ export default function AdminSubjects({ refreshCycle, reload }) {
       <CycleElectiveConfigCard
         subjects={subjects}
         refreshCycle={refreshCycle}
+        onOpenAllocations={() => setShowAllocationsModal(true)}
         onConfigSaved={() => {
           loadCatalog();
           if (refreshCycle) refreshCycle();
+          setShowAllocationsModal(true);
         }}
+      />
+
+      <ElectiveAllocationsModal
+        isOpen={showAllocationsModal}
+        onClose={() => setShowAllocationsModal(false)}
+        refreshCycle={refreshCycle}
+        onNavigateToTeachers={() => setPage && setPage("admin-teachers")}
       />
 
       {/* Catalog Display */}
@@ -440,7 +451,7 @@ export default function AdminSubjects({ refreshCycle, reload }) {
   );
 }
 
-function CycleElectiveConfigCard({ subjects, onConfigSaved, refreshCycle }) {
+function CycleElectiveConfigCard({ subjects, onConfigSaved, refreshCycle, onOpenAllocations }) {
   const [cycleData, setCycleData] = useState(null);
   const [tagMap, setTagMap] = useState({});
   const [loading, setLoading] = useState(true);
@@ -506,6 +517,7 @@ function CycleElectiveConfigCard({ subjects, onConfigSaved, refreshCycle }) {
   };
 
   const tagsDetail = cycleData?.tags_detail || cycleData?.choice_tags || [];
+  const hasChoiceTags = tagsDetail.some(t => Boolean(tagMap[t.tag]));
 
   return (
     <Card>
@@ -515,27 +527,50 @@ function CycleElectiveConfigCard({ subjects, onConfigSaved, refreshCycle }) {
             Cycle Elective Choice Configuration
           </div>
           <div style={{ fontSize: 12, color: "#64748b" }}>
-            Configure which subject tags represent student electives. Students lock in exactly one subtag for each choice tag.
+            Configure which subject tags represent student electives. Once saved, download CSV templates and upload student elective allocations.
           </div>
         </div>
-        {tagsDetail.length > 0 && (
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            style={{
-              background: "#185FA5",
-              color: "#fff",
-              border: "none",
-              borderRadius: 6,
-              padding: "6px 14px",
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: saving ? "not-allowed" : "pointer",
-            }}
-          >
-            {saving ? "Saving…" : "Save Elective Config"}
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {hasChoiceTags && onOpenAllocations && (
+            <button
+              onClick={onOpenAllocations}
+              type="button"
+              style={{
+                background: "#f1f5f9",
+                color: "#1e293b",
+                border: "1px solid #cbd5e1",
+                borderRadius: 6,
+                padding: "6px 14px",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              📥 Student Elective Allocations (CSV)
+            </button>
+          )}
+          {tagsDetail.length > 0 && (
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{
+                background: "#185FA5",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                padding: "6px 14px",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: saving ? "not-allowed" : "pointer",
+              }}
+            >
+              {saving ? "Saving…" : "Save & Open Allocations →"}
+            </button>
+          )}
+        </div>
       </div>
 
       {msg && (

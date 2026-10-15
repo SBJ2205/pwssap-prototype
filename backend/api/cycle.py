@@ -13,10 +13,12 @@ Routes:
       Auto-creates or refreshes the generation run covering all active
       semesters in the subject catalog.
 """
+import csv
+import io
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from api.deps import require_admin
@@ -83,6 +85,27 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
             "missing_tags": missing_tags,
         })
 
+    # Summary of semesters that have choice-based electives
+    elective_semesters = []
+    for sem in active_semesters:
+        cb_tags = store.get_choice_based_tags_for_semester(sem)
+        sem_subs = store.list_subjects(semester=sem)
+        tags_info = []
+        for tag in sorted(cb_tags):
+            subtags = sorted({subtag for s in sem_subs if s.subject_tag == tag for subtag in s.supported_subtags})
+            if subtags:
+                tags_info.append({"tag": tag, "subtags": subtags})
+        if tags_info:
+            sem_stus = [s for s in students if s.semester == sem]
+            complete_stus = [s for s in sem_stus if store.has_complete_lock_in(s.roll_number)]
+            elective_semesters.append({
+                "semester": sem,
+                "tags": tags_info,
+                "student_count": len(sem_stus),
+                "allocated_count": len(complete_stus),
+                "is_complete": len(sem_stus) > 0 and len(complete_stus) == len(sem_stus),
+            })
+
     # Find the current (latest) generation run
     latest_run = None
     if store.runs:
@@ -101,6 +124,7 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
         "teachers_count": len(store.teachers),
         "choice_tags": tags_detail,
         "tags_detail": tags_detail,
+        "elective_semesters": elective_semesters,
         "lock_in_complete_count": lock_in_complete,
         "lock_in_total_students": len(students),
         "students_lock_in": students_lock_in,
@@ -111,6 +135,7 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
 @router.get("")
 def get_cycle_status(store: InMemoryStore = Depends(get_store)):
     return _get_cycle_status_dict(store)
+
 
 
 @router.put("/choice-tags")
@@ -224,3 +249,209 @@ def auto_lock_in_pending_students(store: InMemoryStore = Depends(get_store)):
         "auto_locked_count": count,
         "cycle": _get_cycle_status_dict(store),
     }
+
+
+@router.get("/elective-template/{semester}")
+def download_elective_template(
+    semester: int,
+    store: InMemoryStore = Depends(get_store),
+):
+    """Download dynamically generated CSV template for student elective allocations in a semester."""
+    cb_tags = store.get_choice_based_tags_for_semester(semester)
+    sem_subs = store.list_subjects(semester=semester)
+    tag_subtags: Dict[str, List[str]] = {}
+    for tag in sorted(cb_tags):
+        subtags = sorted({subtag for s in sem_subs if s.subject_tag == tag for subtag in s.supported_subtags})
+        if subtags:
+            tag_subtags[tag] = subtags
+
+    if not tag_subtags:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No choice-based elective tags with subtags found for Semester {semester}.",
+        )
+
+    students = [s for s in store.list_students(semester=semester)]
+    students.sort(key=lambda s: s.roll_number)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header comments showing allowed options for each column
+    options_summary = " | ".join([f"{tag} options: {', '.join(subtags)}" for tag, subtags in tag_subtags.items()])
+    output.write(f"# Semester {semester} Elective Allocations Template\n")
+    output.write(f"# Allowed options: {options_summary}\n")
+
+    tags_list = list(tag_subtags.keys())
+    header = ["roll_number", "student_name"] + tags_list
+    writer.writerow(header)
+
+    for s in students:
+        locked = store.get_lock_in_for_student(s.roll_number)
+        row = [s.roll_number, s.name] + [locked.get(tag, "") for tag in tags_list]
+        writer.writerow(row)
+
+    csv_data = output.getvalue()
+    filename = f"semester_{semester}_elective_allocations.csv"
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import-elective-allocations")
+async def import_elective_allocations(
+    file: UploadFile = File(...),
+    semester: Optional[int] = Form(None),
+    store: InMemoryStore = Depends(get_store),
+):
+    """Import student elective allocations from CSV.
+
+    Expected CSV columns: roll_number (or roll_no), and one column per elective tag (e.g. MDM, PE).
+    Optionally accepts student_name / name (ignored, for reference).
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be a .csv file.")
+
+    contents = await file.read()
+    try:
+        text = contents.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = contents.decode("latin-1")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not decode CSV file. Please upload UTF-8 encoded text.")
+
+    # Skip lines starting with #
+    lines = [line for line in text.splitlines() if not line.strip().startswith("#")]
+    if not lines:
+        raise HTTPException(status_code=400, detail="CSV file is empty.")
+
+    reader = csv.DictReader(lines)
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV header row missing.")
+
+    # Normalize fieldnames
+    raw_fieldnames = [f.strip() for f in reader.fieldnames if f]
+    field_map = {f.lower(): f for f in raw_fieldnames}
+
+    roll_col = None
+    for cand in ("roll_number", "roll_no", "rollno", "roll"):
+        if cand in field_map:
+            roll_col = field_map[cand]
+            break
+
+    if not roll_col:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV must contain a 'roll_number' (or 'roll_no') column.",
+        )
+
+    # Discover which columns correspond to subject tags
+    all_known_tags = {tag.upper(): tag for tag in store.list_subject_tags()}
+    col_to_tag: Dict[str, str] = {}
+    for col in raw_fieldnames:
+        if col == roll_col or col.lower() in ("student_name", "name", "semester"):
+            continue
+        cleaned_col = col.strip()
+        tag_key = cleaned_col.split("_")[0].upper()
+        if tag_key in all_known_tags:
+            col_to_tag[col] = all_known_tags[tag_key]
+
+    if not col_to_tag:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No elective tag columns recognized in CSV headers: {raw_fieldnames}. Expected tag names like {list(all_known_tags.values())}.",
+        )
+
+    # Pre-fetch subject subtags per semester and tag
+    active_sems = {s.semester for s in store.subjects.values()}
+    choice_groups_by_sem: Dict[int, Dict[str, Set[str]]] = {}
+    for sem in active_sems:
+        choice_groups_by_sem[sem] = {}
+        for sub in store.list_subjects(semester=sem):
+            if sub.subject_tag:
+                choice_groups_by_sem[sem].setdefault(sub.subject_tag, set()).update(sub.supported_subtags)
+
+    rows = list(reader)
+    if not rows:
+        raise HTTPException(status_code=400, detail="CSV contains header but no data rows.")
+
+    errors = []
+    allocations_to_apply = []
+
+    for row_idx, row in enumerate(rows, start=2):
+        roll = row.get(roll_col, "").strip()
+        if not roll:
+            continue
+
+        student = store.get_student(roll)
+        if not student:
+            errors.append({
+                "row": row_idx,
+                "roll_number": roll,
+                "error": f"Student with roll number '{roll}' does not exist in student roster.",
+            })
+            continue
+
+        if semester is not None and student.semester != semester:
+            errors.append({
+                "row": row_idx,
+                "roll_number": roll,
+                "error": f"Student '{roll}' is in Semester {student.semester}, but uploaded file is for Semester {semester}.",
+            })
+            continue
+
+        sem_tags = choice_groups_by_sem.get(student.semester, {})
+        student_choices: Dict[str, str] = {}
+
+        for col, tag in col_to_tag.items():
+            val = row.get(col, "").strip()
+            if not val:
+                continue
+
+            valid_subtags = sem_tags.get(tag, set())
+            matched_subtag = next((st for st in valid_subtags if st.lower() == val.lower()), None)
+            if not matched_subtag:
+                allowed_str = ", ".join(sorted(valid_subtags)) if valid_subtags else "none"
+                errors.append({
+                    "row": row_idx,
+                    "roll_number": roll,
+                    "error": f"Invalid subtag '{val}' for tag '{tag}' in Semester {student.semester}. Allowed: {allowed_str}.",
+                })
+            else:
+                student_choices[tag] = matched_subtag
+
+        if student_choices:
+            allocations_to_apply.append((roll, student_choices))
+
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Found {len(errors)} error(s) in CSV", "errors": errors},
+        )
+
+    # Apply valid allocations
+    updated_count = 0
+    for roll, choices in allocations_to_apply:
+        old_lock_in = store.get_lock_in_for_student(roll)
+        if old_lock_in != choices:
+            store.student_time_preferences.pop(roll, None)
+            store.student_faculty_preferences.pop(roll, None)
+
+        merged = dict(old_lock_in)
+        merged.update(choices)
+        selections = [
+            StudentChoiceSelection(roll_number=roll, tag=tag, subtag=subtag)
+            for tag, subtag in merged.items()
+        ]
+        store.set_student_choice_selections(roll, selections)
+        updated_count += 1
+
+    return {
+        "status": "imported",
+        "updated_count": updated_count,
+        "cycle": _get_cycle_status_dict(store),
+    }
+
