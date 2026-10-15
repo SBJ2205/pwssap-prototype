@@ -1,32 +1,34 @@
 # PWSSAP — Department Timetable Generation System
 
-A department-scoped academic timetable generation system: subject/student/teacher CSV
-ingestion, admin-configured choice-based tags, student time-slot and faculty
-preferences, and a solver that balances student satisfaction against teacher workload.
-
-> **Status:** this project is being rebuilt phase-by-phase against a new product spec.
-> See [`backend/PROGRESS.md`](backend/PROGRESS.md) for exactly what's implemented so
-> far, what was intentionally removed from the earlier prototype, and what's next. The
-> feature list and architecture description below describe the ORIGINAL prototype and
-> are being superseded phase-by-phase — treat `backend/PROGRESS.md` as the source of
-> truth for current status.
+An end-to-end department-scoped academic timetable scheduling platform powered by Google OR-Tools CP-SAT. The system coordinates CSV data ingestion, curriculum and elective choice management, student time and faculty preference matrices, teacher availability constraints, automated constraint-satisfaction solving, post-publication administrative overrides, and role-based student/teacher timetable portals with PDF exports.
 
 ---
 
-## ✨ Features
+## 🌟 Key Highlights & Capabilities
 
-- **Blind time-slot preference** — students rate 6 days × 4 periods without knowing which subject falls where
-- **CP-SAT solver** — Google OR-Tools constraint solver with fairness index cap
-- **Penalty scoring** — Preferred = 0 pts · Tolerable = +1 pt · Disliked = +3 pts · Blocked = never assigned
-- **Multi-meeting sections** — a section can meet more than once a week (e.g. Mon + Wed); all meetings are
-  checked for clashes, capacity, and blocking
-- **Faculty preference (secondary term)** — optional per-faculty ranking that only breaks ties between
-  otherwise time-equivalent sections
-- **Gap-reduction post-processing** — a second heuristic pass after the solver shifts students into
-  alternative sections to remove idle schedule gaps, without ever increasing total penalty
-- **Dashboard** — penalty breakdown, per-student results, comparison against genuinely-simulated FCFS &
-  random baselines (not fabricated multipliers)
-- **Personal timetable** — colour-coded by preference satisfaction
+- **Automated CP-SAT Scheduling Engine**:
+  - Solves multi-section teacher assignment and time-slot scheduling simultaneously.
+  - Multi-objective optimization: maximizes student time preferences, breaks ties using secondary faculty preferences, and enforces equal teacher load distribution.
+  - Handles **3-hour subjects** by accurately scheduling one 2-hour meeting and one 1-hour remainder with interval-level clash detection and slot sharing.
+  - Hard constraint guarantees: strictly zero student clashes, zero teacher double-booking, zero teacher availability violations, and strict elective theory/lab cohort synchronization.
+- **Streamlined 6-Step Administrative Workflow**:
+  1. Student Roster Ingestion & Cohort Setup
+  2. Subject Catalog, Elective Groups & Choice Lock-In Configuration
+  3. Faculty Capabilities & Workload Limits
+  4. Teacher Availability Grid & Hard Constraints
+  5. Student Elective Overrides & Choice Tracking
+  6. Automated CP-SAT Solver Execution & Publication
+- **Personalized Student Experience**:
+  - Name and roll number persistence across the portal.
+  - Elective course track lock-in with real-time cohort tracking.
+  - Blind time-slot preference rating (Preferred, Tolerable, Disliked, Blocked) and secondary faculty ranking.
+  - Responsive weekly schedule grid with uniform block sizing, horizontal scrolling, and one-click **PDF Download** formatted for A4 landscape with institutional header.
+- **Teacher Schedule & Class Rosters**:
+  - Weekly teaching grid showing assigned sections, timings, and weekly hours.
+  - Enrollment view with printable student rosters and attendance sheets.
+  - CSV export for personal calendar imports.
+- **Administrative Overrides & Inspection**:
+  - Post-solve manual reassignment of teachers, time slots, and section enrollments with instant clash checking and capacity validation.
 
 ---
 
@@ -35,96 +37,135 @@ preferences, and a solver that balances student satisfaction against teacher wor
 ```
 pwssap-prototype/
 ├── backend/
-│   ├── main.py            # FastAPI app entrypoint (wires the packages below)
-│   ├── domain/            # Persistence-agnostic entities (Teacher, Subject, Student, Section, TimeSlot)
-│   ├── data/              # InMemoryStore + seed data (structured so SQLite can later replace it)
-│   ├── solver/            # CP-SAT engine, gap-reduction + baseline heuristics, orchestration
-│   └── api/               # FastAPI routers (catalog, preferences, solver_routes)
-└── frontend/         # React (Vite) single-page app
-    └── src/
-        ├── App.jsx         # Orchestrator: state, effects, page routing
-        ├── constants.js    # Shared constants (nav, rating scale, grid labels)
-        ├── api/            # Thin axios-based API client (client.js + one module per resource)
-        ├── components/     # Reusable UI (Sidebar, Card/Tooltip/Badge/loading-error-empty states)
-        └── pages/          # One component per nav page (Slots, Solver, Dashboard, Prefs, ...)
+│   ├── api/                   # FastAPI route handlers
+│   │   ├── availability.py    # Teacher availability endpoints
+│   │   ├── cycle.py           # Department cycle management
+│   │   ├── overrides.py       # Post-solve manual override endpoints
+│   │   ├── preferences.py     # Student time & timetable endpoints
+│   │   ├── runs.py            # Solver generation runs & cycle scoping
+│   │   ├── sections.py        # Section generation & timetable preparation
+│   │   ├── solver.py          # Solver trigger & status endpoints
+│   │   ├── students.py        # Student catalog & choice allocation
+│   │   ├── subjects.py        # Subject catalog & choice-tag configuration
+│   │   └── teachers.py        # Teacher catalog, capabilities & timetables
+│   ├── data/
+│   │   └── store.py           # In-memory thread-safe state store
+│   ├── domain/                # Core business domain models & rules
+│   │   ├── enums.py           # RunStatus, SubjectType, Weekday enums
+│   │   ├── models.py          # Domain dataclasses & schemas
+│   │   ├── section_generation.py # Section splitting & slot structure parsing
+│   │   ├── timeslots.py       # Canonical 5×4 timetable grid
+│   │   └── validation.py      # Input validation & constraint checking
+│   ├── ingestion/             # CSV ingestion & validation parsers
+│   │   ├── students_csv.py    # Student roster parser
+│   │   ├── subjects_csv.py    # Subject catalog parser
+│   │   └── teachers_csv.py    # Faculty capability parser
+│   ├── solver/                # Optimization & scheduling engine
+│   │   ├── engine.py          # CP-SAT constraint formulation & solve logic
+│   │   └── service.py         # Solver lifecycle orchestration
+│   ├── tests/                 # Comprehensive test suite (130 pytest + 79 solver tests)
+│   ├── main.py                # FastAPI application entrypoint
+│   └── requirements.txt       # Python dependencies
+├── frontend/                  # React 19 + Vite single-page application
+│   ├── src/
+│   │   ├── api/               # Axios API clients
+│   │   ├── components/        # Reusable UI components & dialogs
+│   │   ├── pages/             # Admin, Teacher, and Student pages
+│   │   ├── App.jsx            # Application orchestrator & session state
+│   │   └── constants.js       # Navigation, slot definitions & color scales
+│   └── package.json           # Frontend dependencies & scripts
+├── demo_run/                  # Sample CSV data for end-to-end demonstrations
+└── README.md
 ```
 
 ---
 
-## 🚀 Running Locally
+## 🚀 Getting Started
 
-### Backend (FastAPI)
+### 1. Prerequisites
+
+- Python 3.11+
+- Node.js 18+ and npm
+
+### 2. Backend Setup
 
 ```bash
 cd backend
+
+# Create virtual environment
 python -m venv venv
-# Windows
+
+# Activate virtual environment
+# On Windows:
 venv\Scripts\activate
-# macOS/Linux
+# On macOS/Linux:
 source venv/bin/activate
 
-pip install fastapi uvicorn ortools python-multipart httpx
+# Install dependencies
+pip install -r requirements.txt
+
+# Start backend server
 uvicorn main:app --reload --port 8000
 ```
 
-API available at **http://localhost:8000**
+The backend API documentation is available at **http://localhost:8000/docs**.
 
-### Frontend (React + Vite)
+### 3. Frontend Setup
 
 ```bash
 cd frontend
+
+# Install dependencies
 npm install
+
+# Start development server
 npm run dev
 ```
 
-App available at **http://localhost:5173**
-
-The backend URL is environment-based (Vite's `import.meta.env`) instead of hardcoded —
-see `frontend/.env.example`. Copy it to `frontend/.env` and adjust `VITE_API_URL` if your
-backend isn't on `http://localhost:8000`.
+The web application is available at **http://localhost:5173**.
 
 ---
 
-## 🔌 API Endpoints
+## 🧪 Testing & Validation
 
-| Method | Path | Role | Description |
-|--------|------|------|-------------|
-| `GET` | `/sections` | admin | All sections (subject × label × teacher × meetings) — concrete timetable data |
-| `GET` | `/subjects` | any | Student-safe subject catalog (code/name/department/year only) |
-| `GET` | `/students` | any | All students |
-| `GET` | `/timeslots` | any | Canonical 6×4 abstract time-slot grid (student-facing) |
-| `GET` | `/faculty-by-subject` | any | `{subject_code: [{id, name}, ...]}` — faculty teaching each subject |
-| `GET` | `/prefs/{id}` | any | Get a student's time-slot preferences |
-| `POST` | `/prefs/{id}` | any | Save a student's time-slot preferences |
-| `GET` | `/faculty-prefs/{id}` | any | Get a student's faculty preferences |
-| `POST` | `/faculty-prefs/{id}` | any | Save a student's faculty preferences |
-| `POST` | `/solve` | admin | Run the CP-SAT solver (+ gap-reduction pass + baselines) |
-| `GET` | `/results` | any | Last solver result — students read this for their own post-solve timetable |
-| `GET/POST/PUT/DELETE` | `/admin/teachers`, `/admin/subjects`, `/admin/students`, `/admin/sections` | admin | Catalog CRUD backing the store |
+### Backend Tests
 
-### Role concept (local prototype only)
+Run the complete backend test suite using `pytest`:
 
-There is no real authentication. A caller asserts its role via an `X-Role: admin`
-header (or a `?role=admin` query param). `api/deps.require_admin` enforces this on
-admin-only routes — see `backend/api/deps.py`. The frontend's sidebar has an
-"Admin / Student" toggle that sets this header for all requests.
+```bash
+cd backend
+venv\Scripts\activate
+pytest tests
+```
 
----
+To run the solver verification scripts directly:
 
-## 🧠 How the Solver Works
+```bash
+python -m tests.test_solver
+python -m tests.test_solver_3hour
+python -m tests.test_section_generation
+```
 
-1. **Domain pruning** — sections with any blocked meeting are removed before solving
-2. **Constraint encoding** — capacity limits, no-clash (across every meeting of a section), one section per subject
-3. **Objective** — minimise Σ(time-slot penalty + faculty-mismatch penalty) across all students
-4. **Fairness bound** — per-student penalty cap (configurable)
-5. **Gap reduction** — post-processing pass that shifts students into alternative sections to remove idle
-   schedule gaps, but only when it does not increase any student's penalty
-6. **Baselines** — independent FCFS and random greedy heuristics are run under the same hard constraints for
-   an honest before/after comparison on the dashboard
+### Frontend Validation
+
+```bash
+cd frontend
+npm run lint
+npm run build
+```
 
 ---
 
-## 🛠 Tech Stack
+## 📐 Canonical Timetable Rules
 
-- **Backend**: Python · FastAPI · Google OR-Tools (CP-SAT)
-- **Frontend**: React 18 · Vite · Axios
+1. **Grid Geometry**: 5 days (Monday through Friday) × 4 time slots per day.
+2. **Institute Reserved Slot**: Monday Slot 1 (09:00–11:00) is reserved for institute/department-level assemblies and meetings; no classes or labs are scheduled here.
+3. **Lab Exclusivity**: Slot 4 (15:45–17:45) across all days is strictly dedicated to laboratory practicals; core theory subjects cannot be scheduled in Slot 4.
+4. **3-Hour Subjects**: Configured with a `2+1` slot structure, scheduled as one full 2-hour meeting and one 1-hour remainder session. Two 1-hour remainder sessions can share a single 2-hour slot with accurate start/end intervals without overlap.
+5. **Teacher Availability**: Faculty availability preferences are treated as hard constraints; instructors are never scheduled in unapproved or blocked slots.
+
+---
+
+## 📄 License
+
+Internal Department Prototype — Academic Year 2025–26.

@@ -21,6 +21,7 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
     getTeacherTimetable(teacherId, selectedRunId)

@@ -1,11 +1,17 @@
 # ── Python ────────────────────────────────────────────────────
+.venv/
+venv/
 backend/venv/
 **/__pycache__/
+**/.pytest_cache/
 backend/*.pyc
 backend/*.pyo
 *.pyc
 *.pyo
 *.egg-info/
+*.db
+*.sqlite3
+*.log
 dist/
 build/
 .eggs/
