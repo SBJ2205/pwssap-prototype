@@ -384,39 +384,49 @@ export default function AdminSolver({
 
         {/* Action Button */}
         <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={handleCheckFeasibility}
-            disabled={checkingFeasibility || solving || !isReady || sectionsCount === 0}
-            style={{
-              padding: "10px 20px",
-              background: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "#aaa" : "#185FA5",
-              color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700,
-              cursor: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "not-allowed" : "pointer",
-              marginRight: 10,
-            }}
-          >
-            {checkingFeasibility ? "Checking Hard Constraints…" : "✓ Check Feasibility First"}
-          </button>
-          <button
-            onClick={handleRunSolver}
-            disabled={solving || !isReady}
-            style={{
-              padding: "10px 28px",
-              background: solving || !isReady ? "#aaa" : "#1D9E75",
-              color: "#fff",
-              border: "none",
-              borderRadius: 8,
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: solving || !isReady ? "not-allowed" : "pointer",
-              boxShadow: "0 2px 6px rgba(29, 158, 117, 0.25)",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <span>{solving ? "Solving Timetable…" : "▶ Run Solver"}</span>
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+            <button
+              onClick={handleCheckFeasibility}
+              disabled={checkingFeasibility || solving || !isReady || sectionsCount === 0}
+              style={{
+                padding: "10px 20px",
+                background: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "#aaa" : "#185FA5",
+                color: "#fff",
+                border: "none",
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "not-allowed" : "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                transition: "background 0.15s",
+              }}
+            >
+              {checkingFeasibility ? "Checking Hard Constraints…" : "✓ Check Feasibility First"}
+            </button>
+            <button
+              onClick={handleRunSolver}
+              disabled={solving || !isReady}
+              style={{
+                padding: "10px 28px",
+                background: solving || !isReady ? "#aaa" : "#1D9E75",
+                color: "#fff",
+                border: "none",
+                borderRadius: 8,
+                fontSize: 14,
+                fontWeight: 700,
+                cursor: solving || !isReady ? "not-allowed" : "pointer",
+                boxShadow: "0 2px 6px rgba(29, 158, 117, 0.25)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                transition: "background 0.15s",
+              }}
+            >
+              <span>{solving ? "Solving Timetable…" : "▶ Run Solver"}</span>
+            </button>
+          </div>
           {!isReady && (
             <div style={{ fontSize: 11, color: "#791F1F", marginTop: 6 }}>
               ⚠ Please complete the missing items in the preflight checklist above before running the solver.

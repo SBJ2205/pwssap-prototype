@@ -262,57 +262,39 @@ export default function AdminDashboard({
                   </div>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                   {step.id === "lock-in" ? (
-                    <>
-                      <button
-                        onClick={() => setShowLockInBreakdown(prev => !prev)}
-                        style={{
-                          padding: "6px 12px",
-                          background: showLockInBreakdown ? "#0f172a" : (step.done ? "#fff" : "#185FA5"),
-                          color: showLockInBreakdown ? "#fff" : (step.done ? "#27500A" : "#fff"),
-                          border: step.done && !showLockInBreakdown ? "1px solid #C0DD97" : "none",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          whiteSpace: "nowrap",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }}
-                      >
-                        <span>{showLockInBreakdown ? "Hide Choices ▲" : "Inspect & Override Choices ▼"}</span>
-                        {pendingStudents.length > 0 && (
-                          <span style={{ background: "#ef4444", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10 }}>
-                            {pendingStudents.length} pending
-                          </span>
-                        )}
-                      </button>
-                      {setPage && (
-                        <button
-                          onClick={() => setPage("admin-students")}
-                          style={{
-                            padding: "6px 10px",
-                            background: "#f1efe8",
-                            border: "1px solid #d1cfc7",
-                            borderRadius: 6,
-                            fontSize: 12,
-                            color: "#475569",
-                            cursor: "pointer",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          Roster →
-                        </button>
+                    <button
+                      onClick={() => setShowLockInBreakdown(prev => !prev)}
+                      style={{
+                        padding: "7px 14px",
+                        background: showLockInBreakdown ? "#0f172a" : (step.done ? "#fff" : "#185FA5"),
+                        color: showLockInBreakdown ? "#fff" : (step.done ? "#27500A" : "#fff"),
+                        border: step.done && !showLockInBreakdown ? "1px solid #C0DD97" : "none",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      <span>{showLockInBreakdown ? "Hide Choices ▲" : "Inspect & Override Choices ▼"}</span>
+                      {pendingStudents.length > 0 && (
+                        <span style={{ background: "#ef4444", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10 }}>
+                          {pendingStudents.length} pending
+                        </span>
                       )}
-                    </>
+                    </button>
                   ) : (
                     step.actionLabel && setPage && (
                       <button
                         onClick={() => setPage(step.pageKey)}
                         style={{
-                          padding: "6px 12px",
+                          padding: "7px 14px",
                           background: step.done ? "#fff" : "#185FA5",
                           color: step.done ? "#27500A" : "#fff",
                           border: step.done ? "1px solid #C0DD97" : "none",
@@ -321,6 +303,10 @@ export default function AdminDashboard({
                           fontWeight: 600,
                           cursor: "pointer",
                           whiteSpace: "nowrap",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          transition: "all 0.15s ease",
                         }}
                       >
                         {step.actionLabel}
