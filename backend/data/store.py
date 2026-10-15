@@ -1,204 +1,537 @@
 """In-memory data store behind a small repository-style interface.
 
-Everything the api/ and solver/ layers need lives behind this class, so the
-underlying persistence can move to SQLite later without touching callers —
-they only ever depend on InMemoryStore's method signatures, never on how
-the data is actually held.
-"""
-from typing import Dict, List, Optional
+Everything the api/ (and later solver/) layers need lives behind this
+class, so the underlying persistence can move to a real DB later without
+touching callers — they only ever depend on InMemoryStore's method
+signatures, never on how the data is actually held.
 
-from domain.models import Teacher, Subject, Student, Section, Meeting, TimeSlot
+Unlike the earlier prototype, this store starts EMPTY of subjects,
+teachers, and students: this is a CSV-driven, department-scoped system
+(see product decisions #1 and #7-#8), so fabricating demo rows here would
+misrepresent how the real app is populated. The only thing built eagerly
+is the canonical time-slot grid, which is a fixed structural constant,
+not demo data — see domain/timeslots.py.
+"""
+from typing import Dict, List, Optional, Tuple
+
+from domain.models import (
+    ChoiceTagConfig,
+    GenerationRun,
+    Section,
+    Student,
+    StudentChoiceSelection,
+    Subject,
+    Teacher,
+    TeacherSubjectCapability,
+)
+from domain.timeslots import TimeSlot, build_canonical_grid, is_slot_usable
 
 
 class InMemoryStore:
     def __init__(self) -> None:
-        self.teachers: Dict[int, Teacher] = {}
+        # Fixed structural constant, shared by every run.
+        self.time_slots: List[TimeSlot] = build_canonical_grid()
+
         self.subjects: Dict[str, Subject] = {}
-        self.students: Dict[int, Student] = {}
+
+        self.teachers: Dict[str, Teacher] = {}
+        self.teacher_capabilities: List[TeacherSubjectCapability] = []
+        # teacher_id -> slot_key -> available (hard constraint, admin-managed).
+        # Missing entries default to available=True; the admin only needs
+        # to mark the slots that are actually blocked.
+        self.teacher_availability: Dict[str, Dict[str, bool]] = {}
+
+        self.students: Dict[str, Student] = {}
+        self.student_choice_selections: Dict[str, List[StudentChoiceSelection]] = {}
+        # roll_number -> slot_key -> rating (1-4, see domain.enums.PreferenceRating).
+        # Missing entries default to indifferent, not to any particular
+        # rating -- that default lives with whatever reads this (the
+        # solver, later), not here.
+        self.student_time_preferences: Dict[str, Dict[str, int]] = {}
+        # roll_number -> subject_code -> teacher_id -> rating (1-3, no
+        # Blocked -- faculty preference is secondary/soft, never a hard
+        # constraint; see domain.validation.FACULTY_RATING_VALUES).
+        self.student_faculty_preferences: Dict[str, Dict[str, Dict[str, int]]] = {}
+
         self.sections: Dict[int, Section] = {}
-        self.time_slots: List[TimeSlot] = []
+        self._next_section_id: int = 1
 
-        # Student-submitted preference data. Missing keys are intentionally
-        # NOT filled in here — "defaults to indifferent" is a solver-layer
-        # concern (see solver/helpers.py), not a storage concern.
-        self.student_ts_prefs: Dict[int, Dict[str, int]] = {}
-        self.student_faculty_prefs: Dict[int, Dict[str, Dict[int, int]]] = {}
+        self.runs: Dict[int, GenerationRun] = {}
+        self._next_run_id: int = 1
 
-        self.last_result: dict = {}
+        # Cycle-level elective configuration: tag -> is_choice_based bool.
+        self.cycle_choice_configs: Dict[str, bool] = {}
+
+        # roll_number -> {subject_code -> section_id}.
+        # Populated by solver/service.py after solving; refined by Phase 10
+        # admin override endpoints (enroll_student / unenroll_student).
+        self.student_section_assignments: Dict[str, Dict[str, int]] = {}
+
+    # ── Time slots (fixed, structural) ─────────────────────────────────────
+    def list_time_slots(self) -> List[TimeSlot]:
+        return self.time_slots
+
+    def get_time_slot(self, key: str) -> Optional[TimeSlot]:
+        return next((s for s in self.time_slots if s.key == key), None)
+
+    def list_ratable_time_slots(self) -> List[TimeSlot]:
+        """Slots a student can actually rate -- excludes Monday's first
+        slot, which is blocked for everything and would be meaningless
+        to ask a student to rate (product decision #4)."""
+        return [s for s in self.time_slots if is_slot_usable(s)]
+
+    # ── Subjects ─────────────────────────────────────────────────────────────
+    def list_subjects(self, semester: Optional[int] = None) -> List[Subject]:
+        subjects = list(self.subjects.values())
+        if semester is not None:
+            subjects = [s for s in subjects if s.semester == semester]
+        return subjects
+
+    def get_subject(self, code: str) -> Optional[Subject]:
+        return self.subjects.get(code)
+
+    def upsert_subject(self, subject: Subject) -> Subject:
+        self.subjects[subject.subject_code] = subject
+        return subject
+
+    def delete_subject(self, code: str) -> None:
+        self.subjects.pop(code, None)
+
+    def clear_subjects(self) -> int:
+        """Clear the catalog and dependent generated scheduling state.
+
+        Teachers and students remain available for the replacement catalog,
+        but old capabilities, sections, runs, choices, and assignments would
+        otherwise refer to subjects that no longer exist.
+        """
+        count = len(self.subjects)
+        self.subjects.clear()
+        self.teacher_capabilities.clear()
+        self.sections.clear()
+        self.runs.clear()
+        self.student_choice_selections.clear()
+        self.student_faculty_preferences.clear()
+        self.student_section_assignments.clear()
+        self.cycle_choice_configs.clear()
+        self._next_section_id = 1
+        self._next_run_id = 1
+        return count
+
+    def list_subject_tags(self, semester: Optional[int] = None) -> List[str]:
+        """Distinct subject_tag values currently in the catalog, optionally
+        scoped to one semester. Used by the admin choice-tag configuration
+        UI (product decision #3) to show which tags exist to choose from."""
+        return sorted({s.subject_tag for s in self.list_subjects(semester)})
+
+    def get_choice_groups(self, semester: Optional[int] = None) -> Dict[str, List[str]]:
+        """Returns {tag: [subtag1, subtag2, ...]} for tags in the catalog that define subtags."""
+        result: Dict[str, set] = {}
+        for s in self.list_subjects(semester):
+            for subtag in s.supported_subtags:
+                result.setdefault(s.subject_tag, set()).add(subtag)
+        return {tag: sorted(list(subtags)) for tag, subtags in sorted(result.items())}
+
+    # ── Cycle Choice Configs (department-level) ───────────────────────────
+    def set_cycle_choice_configs(self, configs: Dict[str, bool]) -> None:
+        self.cycle_choice_configs = dict(configs)
+
+    def get_cycle_choice_configs(self) -> Dict[str, bool]:
+        return dict(self.cycle_choice_configs)
+
+    def get_choice_based_tags(self) -> set:
+        if self.cycle_choice_configs:
+            return {tag for tag, is_cb in self.cycle_choice_configs.items() if is_cb}
+        return {tag for tag, subtags in self.get_choice_groups().items() if subtags and tag.upper() != "CORE"}
+
+    def get_choice_based_tags_for_semester(self, semester: int) -> set:
+        """Return configured choice tags that have subtags in this semester."""
+        configured = self.get_choice_based_tags()
+        groups = self.get_choice_groups(semester)
+        return {tag for tag in configured if groups.get(tag)}
 
     # ── Teachers ───────────────────────────────────────────────────────────
     def list_teachers(self) -> List[Teacher]:
         return list(self.teachers.values())
 
-    def get_teacher(self, teacher_id: int) -> Teacher:
-        return self.teachers[teacher_id]
+    def get_teacher(self, teacher_id: str) -> Optional[Teacher]:
+        return self.teachers.get(teacher_id)
 
-    def add_teacher(self, name: str, department: Optional[str] = None) -> Teacher:
-        new_id = (max(self.teachers.keys()) + 1) if self.teachers else 0
-        teacher = Teacher(id=new_id, name=name, department=department)
-        self.teachers[new_id] = teacher
+    def upsert_teacher(self, teacher: Teacher) -> Teacher:
+        self.teachers[teacher.teacher_id] = teacher
         return teacher
 
-    def update_teacher(self, teacher_id: int, name: Optional[str] = None,
-                        department: Optional[str] = None) -> Teacher:
-        teacher = self.teachers[teacher_id]
-        if name is not None:
-            teacher.name = name
-        if department is not None:
-            teacher.department = department
-        return teacher
+    def add_teacher_capability(
+        self, teacher_id: str, subject_code: str, maximum_weekly_hours: Optional[int] = None
+    ) -> None:
+        existing = next(
+            (c for c in self.teacher_capabilities
+             if c.teacher_id == teacher_id and c.subject_code == subject_code),
+            None,
+        )
+        if existing is not None:
+            existing.maximum_weekly_hours = maximum_weekly_hours
+            return
+        self.teacher_capabilities.append(
+            TeacherSubjectCapability(teacher_id, subject_code, maximum_weekly_hours)
+        )
 
-    def delete_teacher(self, teacher_id: int) -> None:
-        if any(s.teacher_id == teacher_id for s in self.sections.values()):
-            raise ValueError("Cannot delete a teacher assigned to an existing section")
-        del self.teachers[teacher_id]
+    def replace_teacher_capabilities(
+        self, teacher_id: str, subject_loads: Dict[str, Optional[int]]
+    ) -> None:
+        self.teacher_capabilities = [
+            capability for capability in self.teacher_capabilities
+            if capability.teacher_id != teacher_id
+        ]
+        for subject_code, maximum in subject_loads.items():
+            self.add_teacher_capability(teacher_id, subject_code, maximum)
 
-    # ── Subjects ───────────────────────────────────────────────────────────
-    def list_subjects(self) -> List[Subject]:
-        return list(self.subjects.values())
+    def teacher_subject_load(self, teacher_id: str, subject_code: str) -> Optional[int]:
+        for capability in self.teacher_capabilities:
+            if capability.teacher_id == teacher_id and capability.subject_code == subject_code:
+                return capability.maximum_weekly_hours
+        return None
 
-    def get_subject(self, code: str) -> Subject:
-        return self.subjects[code]
+    def capabilities_for_teacher(self, teacher_id: str) -> List[str]:
+        return [c.subject_code for c in self.teacher_capabilities if c.teacher_id == teacher_id]
 
-    def add_subject(self, code: str, name: str, department: Optional[str] = None,
-                     year: Optional[int] = None) -> Subject:
-        if code in self.subjects:
-            raise ValueError(f"Subject {code} already exists")
-        subject = Subject(code=code, name=name, department=department, year=year)
-        self.subjects[code] = subject
-        return subject
+    def teachers_for_subject(self, subject_code: str) -> List[str]:
+        return [c.teacher_id for c in self.teacher_capabilities if c.subject_code == subject_code]
 
-    def update_subject(self, code: str, name: Optional[str] = None,
-                        department: Optional[str] = None, year: Optional[int] = None) -> Subject:
-        subject = self.subjects[code]
-        if name is not None:
-            subject.name = name
-        if department is not None:
-            subject.department = department
-        if year is not None:
-            subject.year = year
-        return subject
+    def rankable_subjects_for_semester(self, semester: Optional[int] = None) -> List[Tuple[str, List[str]]]:
+        """(subject_code, [teacher_id, ...]) pairs for subjects with 2+
+        eligible teachers, optionally scoped to one semester -- a subject
+        taught by only one teacher has nothing to rank (product decision
+        #11), so it's excluded here rather than left for callers to filter."""
+        result = []
+        for subject in self.list_subjects(semester):
+            teacher_ids = self.teachers_for_subject(subject.subject_code)
+            if len(teacher_ids) >= 2:
+                result.append((subject.subject_code, teacher_ids))
+        return result
 
-    def delete_subject(self, code: str) -> None:
-        if self.sections_for_subject(code):
-            raise ValueError("Cannot delete a subject with existing sections")
-        del self.subjects[code]
+    # ── Teacher availability (hard constraint) ──────────────────────────────
+    def set_teacher_availability(self, teacher_id: str, slot_key: str, available: bool) -> None:
+        self.teacher_availability.setdefault(teacher_id, {})[slot_key] = available
+
+    def is_teacher_available(self, teacher_id: str, slot_key: str) -> bool:
+        return self.teacher_availability.get(teacher_id, {}).get(slot_key, True)
+
+    def get_teacher_availability(self, teacher_id: str) -> Dict[str, bool]:
+        return dict(self.teacher_availability.get(teacher_id, {}))
 
     # ── Students ───────────────────────────────────────────────────────────
-    def list_students(self) -> List[Student]:
-        return list(self.students.values())
+    def list_students(self, semester: Optional[int] = None) -> List[Student]:
+        students = list(self.students.values())
+        if semester is not None:
+            students = [s for s in students if s.semester == semester]
+        return students
 
-    def get_student(self, student_id: int) -> Optional[Student]:
-        return self.students.get(student_id)
+    def get_student(self, roll_number: str) -> Optional[Student]:
+        return self.students.get(roll_number)
 
-    def add_student(self, name: str, roll: str, department: Optional[str] = None,
-                     year: Optional[int] = None) -> Student:
-        new_id = (max(self.students.keys()) + 1) if self.students else 0
-        student = Student(id=new_id, name=name, roll=roll, department=department, year=year)
-        self.students[new_id] = student
+    def upsert_student(self, student: Student) -> Student:
+        self.students[student.roll_number] = student
         return student
 
-    def update_student(self, student_id: int, name: Optional[str] = None, roll: Optional[str] = None,
-                        department: Optional[str] = None, year: Optional[int] = None) -> Student:
-        student = self.students[student_id]
-        if name is not None:
-            student.name = name
-        if roll is not None:
-            student.roll = roll
-        if department is not None:
-            student.department = department
-        if year is not None:
-            student.year = year
-        return student
+    def delete_student(self, roll_number: str) -> None:
+        self.students.pop(roll_number, None)
+        self.student_choice_selections.pop(roll_number, None)
+        self.student_time_preferences.pop(roll_number, None)
+        self.student_faculty_preferences.pop(roll_number, None)
 
-    def delete_student(self, student_id: int) -> None:
-        del self.students[student_id]
-        self.student_ts_prefs.pop(student_id, None)
-        self.student_faculty_prefs.pop(student_id, None)
+    def clear_students(self) -> int:
+        """Clear students and invalidate schedules built from the roster."""
+        count = len(self.students)
+        self.students.clear()
+        self.student_choice_selections.clear()
+        self.student_time_preferences.clear()
+        self.student_faculty_preferences.clear()
+        self.student_section_assignments.clear()
+        self.sections.clear()
+        self.runs.clear()
+        self._next_section_id = 1
+        self._next_run_id = 1
+        return count
 
-    # ── Sections (hidden concrete timetable data) ─────────────────────────
-    def list_sections(self) -> List[Section]:
-        return list(self.sections.values())
+    def clear_teachers(self) -> int:
+        """Clear teachers and invalidate schedules using teacher assignments."""
+        count = len(self.teachers)
+        self.teachers.clear()
+        self.teacher_capabilities.clear()
+        self.teacher_availability.clear()
+        self.sections.clear()
+        self.runs.clear()
+        self.student_section_assignments.clear()
+        self._next_section_id = 1
+        self._next_run_id = 1
+        return count
 
-    def sections_for_subject(self, subject_code: str) -> List[Section]:
-        return [s for s in self.sections.values() if s.subject_code == subject_code]
+    # ── Student time-slot preferences ────────────────────────────────────
+    def get_time_preferences(self, roll_number: str) -> Dict[str, int]:
+        return dict(self.student_time_preferences.get(roll_number, {}))
 
-    def get_section(self, section_id: int) -> Section:
-        return self.sections[section_id]
+    def set_time_preferences(self, roll_number: str, ratings: Dict[str, int]) -> None:
+        self.student_time_preferences[roll_number] = dict(ratings)
 
-    def add_section(self, subject_code: str, label: str, teacher_id: int, room: str,
-                     capacity: int, meetings: List[Meeting]) -> Section:
-        if subject_code not in self.subjects:
-            raise ValueError(f"Unknown subject {subject_code}")
-        if teacher_id not in self.teachers:
-            raise ValueError(f"Unknown teacher {teacher_id}")
-        new_id = (max(self.sections.keys()) + 1) if self.sections else 0
-        section = Section(id=new_id, subject_code=subject_code, label=label, teacher_id=teacher_id,
-                           room=room, capacity=capacity, meetings=meetings)
-        self.sections[new_id] = section
-        return section
+    # ── Student faculty preferences (secondary, soft -- product decision #11) ──
+    def get_faculty_preferences(self, roll_number: str) -> Dict[str, Dict[str, int]]:
+        return {
+            code: dict(ratings)
+            for code, ratings in self.student_faculty_preferences.get(roll_number, {}).items()
+        }
 
-    def update_section(self, section_id: int, subject_code: Optional[str] = None, label: Optional[str] = None,
-                        teacher_id: Optional[int] = None, room: Optional[str] = None,
-                        capacity: Optional[int] = None, meetings: Optional[List[Meeting]] = None) -> Section:
-        section = self.sections[section_id]
+    def set_faculty_preferences(self, roll_number: str, preferences: Dict[str, Dict[str, int]]) -> None:
+        self.student_faculty_preferences[roll_number] = {
+            code: dict(ratings) for code, ratings in preferences.items()
+        }
+
+    # ── Student choice selections & lock-in ─────────────────────────────────
+    def set_student_choice_selections(
+        self, roll_number: str, selections: List[StudentChoiceSelection]
+    ) -> None:
+        self.student_choice_selections[roll_number] = list(selections)
+
+    def get_student_choice_selections(self, roll_number: str) -> List[StudentChoiceSelection]:
+        return list(self.student_choice_selections.get(roll_number, []))
+
+    def get_lock_in_for_student(self, roll_number: str) -> Dict[str, str]:
+        """Returns {tag: subtag} mapping for this student's elective choices."""
+        selections = self.get_student_choice_selections(roll_number)
+        return {s.tag: s.subtag for s in selections}
+
+    def has_complete_lock_in(self, roll_number: str) -> bool:
+        """True if the student has selected a subtag for all choice-based tags in their semester."""
+        student = self.get_student(roll_number)
+        if not student:
+            return False
+        cb_tags = self.get_choice_based_tags_for_semester(student.semester)
+        sem_subjects = self.list_subjects(semester=student.semester)
+        applicable_tags = {s.subject_tag for s in sem_subjects if s.subject_tag in cb_tags}
+        if not applicable_tags:
+            return True  # No electives required for this semester
+        lock_in = self.get_lock_in_for_student(roll_number)
+        return all(tag in lock_in and bool(str(lock_in[tag]).strip()) for tag in applicable_tags)
+
+    def get_enrolled_subjects_for_student(self, roll_number: str) -> List[Subject]:
+        """List of subjects the student is enrolled in for this cycle.
+
+        - Non-choice subjects: all subjects in student's semester.
+        - Choice-based subjects: only those whose subtag matches student's locked-in subtag.
+        """
+        student = self.get_student(roll_number)
+        if not student:
+            return []
+        cb_tags = self.get_choice_based_tags_for_semester(student.semester)
+        sem_subjects = self.list_subjects(semester=student.semester)
+        lock_in = self.get_lock_in_for_student(roll_number)
+        enrolled: List[Subject] = []
+        for s in sem_subjects:
+            if s.subject_tag not in cb_tags:
+                enrolled.append(s)
+            else:
+                chosen_subtag = lock_in.get(s.subject_tag)
+                if chosen_subtag and s.supports_subtag(chosen_subtag):
+                    enrolled.append(s)
+        return enrolled
+
+    def rankable_subjects_for_student(self, roll_number: str) -> List[Tuple[str, List[str]]]:
+        """(subject_code, [teacher_id, ...]) pairs for student's ENROLLED subjects
+        with 2+ eligible teachers."""
+        enrolled = self.get_enrolled_subjects_for_student(roll_number)
+        result = []
+        for subject in enrolled:
+            teacher_ids = self.teachers_for_subject(subject.subject_code)
+            if len(teacher_ids) >= 2:
+                result.append((subject.subject_code, teacher_ids))
+        return result
+
+    # ── Sections (concrete teacher/time timetable data) ─────────────────────
+    def list_sections(
+        self,
+        subject_code: Optional[str] = None,
+        run_id: Optional[int] = None,
+    ) -> List[Section]:
+        sections = list(self.sections.values())
         if subject_code is not None:
-            if subject_code not in self.subjects:
-                raise ValueError(f"Unknown subject {subject_code}")
-            section.subject_code = subject_code
-        if label is not None:
-            section.label = label
-        if teacher_id is not None:
-            if teacher_id not in self.teachers:
-                raise ValueError(f"Unknown teacher {teacher_id}")
-            section.teacher_id = teacher_id
-        if room is not None:
-            section.room = room
-        if capacity is not None:
-            section.capacity = capacity
-        if meetings is not None:
-            section.meetings = meetings
+            sections = [s for s in sections if s.subject_code == subject_code]
+        if run_id is not None:
+            sections = [s for s in sections if s.run_id == run_id]
+        return sections
+
+    def list_sections_for_run(self, run_id: int) -> List[Section]:
+        """All sections produced for a specific generation run."""
+        return [s for s in self.sections.values() if s.run_id == run_id]
+
+    def clear_sections_for_run(self, run_id: int) -> int:
+        """Remove every section belonging to run_id.  Returns the count of
+        deleted sections, so the caller can log/report how many were cleared."""
+        to_delete = [sid for sid, s in self.sections.items() if s.run_id == run_id]
+        for sid in to_delete:
+            del self.sections[sid]
+        return len(to_delete)
+
+    def get_section(self, section_id: int) -> Optional[Section]:
+        return self.sections.get(section_id)
+
+    def add_section(self, section: Section) -> Section:
+        if section.id is None:
+            section.id = self._next_section_id
+        self._next_section_id = max(self._next_section_id, section.id + 1)
+        self.sections[section.id] = section
         return section
 
     def delete_section(self, section_id: int) -> None:
-        del self.sections[section_id]
+        self.sections.pop(section_id, None)
 
-    # ── Time slots (abstract, student-facing grid) ────────────────────────
-    def list_time_slots(self) -> List[TimeSlot]:
-        return self.time_slots
+    def enrolled_count_for_subject(
+        self, subject_code: str, run_id: Optional[int] = None
+    ) -> int:
+        """Count how many students are enrolled in subject_code.
 
-    # ── Preferences ────────────────────────────────────────────────────────
-    def get_ts_prefs(self, student_id: int) -> Dict[str, int]:
-        return self.student_ts_prefs.get(student_id, {})
+        - Non-choice subjects: all students in that subject's semester.
+        - Choice subjects: students whose locked-in subtag matches subject.subtag.
+        """
+        subject = self.get_subject(subject_code)
+        if subject is None:
+            return 0
 
-    def set_ts_prefs(self, student_id: int, prefs: Dict[str, int]) -> None:
-        self.student_ts_prefs[student_id] = prefs
+        cb_tags = self.get_choice_based_tags_for_semester(subject.semester)
+        semester_students = self.list_students(semester=subject.semester)
 
-    def get_faculty_prefs(self, student_id: int) -> Dict[str, Dict[int, int]]:
-        return self.student_faculty_prefs.get(student_id, {})
+        if subject.subject_tag not in cb_tags:
+            return len(semester_students)
 
-    def set_faculty_prefs(self, student_id: int, prefs: Dict[str, Dict[int, int]]) -> None:
-        self.student_faculty_prefs[student_id] = prefs
+        # Choice-based: count students whose lock-in matches this subject's subtag
+        count = 0
+        for student in semester_students:
+            lock_in = self.get_lock_in_for_student(student.roll_number)
+            if subject.supports_subtag(lock_in.get(subject.subject_tag, "")):
+                count += 1
+        return count
 
-    # ── Solver results ─────────────────────────────────────────────────────
-    def get_last_result(self) -> dict:
-        return self.last_result
+    # ── Generation runs (department-scoped cycle) ──────────────────────────
+    def create_run(
+        self,
+        semesters: Optional[List[int]] = None,
+        semester: Optional[int] = None,
+    ) -> GenerationRun:
+        if semesters is not None:
+            if isinstance(semesters, int):
+                sem_list = [semesters]
+            else:
+                sem_list = list(semesters)
+        elif semester is not None:
+            sem_list = [semester]
+        else:
+            sem_list = sorted({s.semester for s in self.subjects.values()})
+        run = GenerationRun(id=self._next_run_id, semesters=sem_list)
+        self.runs[run.id] = run
+        self._next_run_id += 1
+        return run
 
-    def set_last_result(self, result: dict) -> None:
-        self.last_result = result
+    def get_run(self, run_id: int) -> Optional[GenerationRun]:
+        return self.runs.get(run_id)
+
+    def list_runs(self, semester: Optional[int] = None) -> List[GenerationRun]:
+        runs = list(self.runs.values())
+        if semester is not None:
+            runs = [r for r in runs if semester in r.semesters]
+        return runs
+
+    def set_run_choice_tags(self, run_id: int, configs: List[ChoiceTagConfig]) -> GenerationRun:
+        """Legacy method kept for backward compatibility."""
+        run = self.runs[run_id]
+        run.choice_tag_configs = list(configs)
+        return run
+
+    # ── Student-section enrollment (Phase 10) ─────────────────────────────
+
+    def get_student_sections(self, roll_number: str) -> Dict[str, int]:
+        """subject_code -> section_id mapping for one student.
+
+        Returns an empty dict if the student has no assignments yet (solver
+        has not run, or student was added post-solving)."""
+        return dict(self.student_section_assignments.get(roll_number, {}))
+
+    def enroll_student(
+        self, roll_number: str, subject_code: str, section_id: int
+    ) -> None:
+        """Assign a student to a section for one subject.
+
+        Replaces any prior assignment for the same subject (one section
+        per student per subject at a time)."""
+        self.student_section_assignments.setdefault(roll_number, {})[subject_code] = section_id
+
+    def unenroll_student(self, roll_number: str, subject_code: str) -> bool:
+        """Remove a student's section assignment for a subject.
+
+        Returns True if an assignment existed and was removed, False otherwise."""
+        sub_map = self.student_section_assignments.get(roll_number, {})
+        if subject_code in sub_map:
+            del sub_map[subject_code]
+            return True
+        return False
+
+    def enrolled_students_for_section(self, section_id: int) -> List[str]:
+        """Roll numbers of all students currently enrolled in section_id."""
+        return [
+            roll
+            for roll, sub_map in self.student_section_assignments.items()
+            if section_id in sub_map.values()
+        ]
+
+    def current_enrollment_count(self, section_id: int) -> int:
+        """Current enrolled headcount for a section."""
+        return sum(
+            1 for sub_map in self.student_section_assignments.values()
+            if section_id in sub_map.values()
+        )
+
+    def slot_keys_for_student(self, roll_number: str) -> List[str]:
+        """Slot keys occupied by every section the student is enrolled in.
+
+        Used for student-level conflict detection: if the admin moves a
+        student into a section meeting at a slot already occupied by another
+        of their sections, we warn (but still allow the override)."""
+        occupied: List[str] = []
+        for section_id in self.get_student_sections(roll_number).values():
+            section = self.get_section(section_id)
+            if section:
+                occupied.extend(m.slot_key for m in section.meetings if m.slot_key)
+        return occupied
+
+    def slot_keys_for_teacher(
+        self, teacher_id: str, exclude_section_id: Optional[int] = None
+    ) -> List[str]:
+        """Slot keys occupied by every section the teacher is assigned to.
+
+        Used for teacher double-booking detection when the admin reassigns
+        a teacher post-publication.  Pass exclude_section_id to omit the
+        section currently being reassigned (otherwise the teacher's current
+        slot would always clash with itself)."""
+        occupied: List[str] = []
+        for section in self.sections.values():
+            if section.teacher_id == teacher_id and section.id != exclude_section_id:
+                occupied.extend(m.slot_key for m in section.meetings if m.slot_key)
+        return occupied
 
 
 # ── Store access ──────────────────────────────────────────────────────────
-# A single process-wide instance, lazily seeded on first use. This is the
-# one place a future SQLite-backed store would plug in: swap what
-# get_store() returns/constructs, and every api/ route (which only ever
-# receives a store via this function) keeps working unchanged.
+# A single process-wide instance. This is the one place a future DB-backed
+# store would plug in: swap what get_store() returns/constructs, and every
+# api/ route (which only ever receives a store via this function) keeps
+# working unchanged.
 _default_store: Optional[InMemoryStore] = None
 
 
 def get_store() -> InMemoryStore:
     global _default_store
     if _default_store is None:
-        from data.seed import build_default_store
-        _default_store = build_default_store()
+        _default_store = InMemoryStore()
     return _default_store
+
+
+def reset_store() -> None:
+    """Reset the process-wide store. Mainly useful for tests."""
+    global _default_store
+    _default_store = None

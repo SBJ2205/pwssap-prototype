@@ -1,53 +1,65 @@
-"""Student preference submission: time-slot ratings and subject-scoped
-faculty rankings. Missing ratings are read elsewhere (solver/helpers.py) as
-defaulting to indifferent — this module just stores whatever was submitted.
+"""Student time-slot preference submission (product decision #10).
+
+Not admin-managed — a student submits their own preferences here (no
+real auth in this local prototype; see product decision #14). Validation
+follows the "warn, don't silently accept useless data" rule: a payload
+can be rejected outright if it's degenerate enough to make scheduling
+nearly impossible (e.g. almost the whole week blocked), or accepted with
+warnings if it's merely uninformative (e.g. everything rated the same).
 """
 from typing import Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from data.store import InMemoryStore, get_store
-from solver.helpers import slot_blocked
+from domain.validation import validate_time_slot_preferences
 
-router = APIRouter()
-
-
-@router.get("/prefs/{student_id}")
-def get_prefs(student_id: int, store: InMemoryStore = Depends(get_store)):
-    """Return the student's time-slot preferences as {day|time: rating}."""
-    return store.get_ts_prefs(student_id)
+router = APIRouter(prefix="/students/{roll_number}/time-preferences")
 
 
-class PrefsPayload(BaseModel):
-    prefs: Dict[str, int]  # "Day|Time" -> rating
+class TimePreferencesPayload(BaseModel):
+    ratings: Dict[str, int]  # slot_key -> rating, see domain.enums.PreferenceRating
 
 
-@router.post("/prefs/{student_id}")
-def save_prefs(student_id: int, payload: PrefsPayload, store: InMemoryStore = Depends(get_store)):
-    store.set_ts_prefs(student_id, payload.prefs)
-    # Quick feasibility check: for each subject, at least one section must
-    # survive block-pruning (no meeting rated 4).
-    warnings = []
-    for subject in store.list_subjects():
-        sections = store.sections_for_subject(subject.code)
-        available = [sec for sec in sections if not slot_blocked(sec, payload.prefs)]
-        if not available:
-            warnings.append(f"All slots for {subject.code} are blocked — assignment will be INFEASIBLE.")
-    return {"status": "saved", "warnings": warnings}
+def _require_student(roll_number: str, store: InMemoryStore) -> None:
+    if store.get_student(roll_number) is None:
+        raise HTTPException(status_code=404, detail="Student not found")
 
 
-@router.get("/faculty-prefs/{student_id}")
-def get_faculty_prefs(student_id: int, store: InMemoryStore = Depends(get_store)):
-    """Return the student's faculty preferences as {subject_code: {teacher_id: rating}}."""
-    return store.get_faculty_prefs(student_id)
+@router.get("")
+def get_time_preferences(roll_number: str, store: InMemoryStore = Depends(get_store)):
+    _require_student(roll_number, store)
+    saved = store.get_time_preferences(roll_number)
+    return [
+        {
+            "slot_key": slot.key,
+            "day": slot.day,
+            "slot_index": slot.slot_index,
+            "start_time": slot.start_time,
+            "end_time": slot.end_time,
+            "rating": saved.get(slot.key),
+        }
+        for slot in store.list_ratable_time_slots()
+    ]
 
 
-class FacultyPrefsPayload(BaseModel):
-    prefs: Dict[str, Dict[int, int]]  # subject_code -> {teacher_id -> rating (1-3)}
+@router.put("")
+def save_time_preferences(
+    roll_number: str, payload: TimePreferencesPayload, store: InMemoryStore = Depends(get_store)
+):
+    _require_student(roll_number, store)
 
+    if not store.has_complete_lock_in(roll_number):
+        raise HTTPException(
+            status_code=409,
+            detail="Please complete your elective lock-in before submitting time preferences.",
+        )
 
-@router.post("/faculty-prefs/{student_id}")
-def save_faculty_prefs(student_id: int, payload: FacultyPrefsPayload, store: InMemoryStore = Depends(get_store)):
-    store.set_faculty_prefs(student_id, payload.prefs)
-    return {"status": "saved"}
+    ratable_keys = {slot.key for slot in store.list_ratable_time_slots()}
+    result = validate_time_slot_preferences(payload.ratings, ratable_keys)
+    if not result.is_valid:
+        raise HTTPException(status_code=400, detail={"errors": result.errors})
+
+    store.set_time_preferences(roll_number, payload.ratings)
+    return {"status": "saved", "warnings": result.warnings}

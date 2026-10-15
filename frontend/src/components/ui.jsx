@@ -114,16 +114,66 @@ export function Tooltip({ text, children }) {
 }
 
 // ── InfoBox ───────────────────────────────────────────────────────────────
-// A pale blue callout card for page-level orientation text.
-export function InfoBox({ title, children }) {
+// A subtle, collapsible help/guide card for page-level orientation text.
+export function InfoBox({ title, children, defaultOpen = false }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
   return (
     <div style={{
-      background: "#EEF5FF", border: "1px solid #C0D9F7",
-      borderRadius: 8, padding: "12px 16px", marginBottom: 14,
-      fontSize: 13, color: "#1a385a",
+      background: isOpen ? "#EEF5FF" : "#F8FAFC",
+      border: isOpen ? "1px solid #C0D9F7" : "1px solid #E2E8F0",
+      borderRadius: 8,
+      padding: isOpen ? "10px 14px" : "6px 12px",
+      marginBottom: 14,
+      fontSize: 13,
+      transition: "all 0.15s ease",
     }}>
-      {title && <div style={{ fontWeight: 600, marginBottom: 5, fontSize: 13 }}>ℹ {title}</div>}
-      <div style={{ color: "#2a4d78", lineHeight: 1.6 }}>{children}</div>
+      <div
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          cursor: "pointer",
+          userSelect: "none",
+          fontWeight: 500,
+          color: isOpen ? "#1a385a" : "#64748B",
+          fontSize: 12,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            background: isOpen ? "#185FA5" : "#94A3B8",
+            color: "#FFFFFF",
+            fontSize: 11,
+            fontWeight: "bold",
+          }}>
+            ?
+          </span>
+          <span style={{ fontWeight: 600 }}>{title || "Help & Info"}</span>
+        </span>
+        <span style={{ fontSize: 11, color: isOpen ? "#185FA5" : "#94A3B8", fontWeight: 600 }}>
+          {isOpen ? "Hide ▲" : "Guide & Info ▼"}
+        </span>
+      </div>
+      {isOpen && (
+        <div style={{
+          marginTop: 8,
+          paddingTop: 8,
+          borderTop: "1px solid #D8E7FA",
+          color: "#2a4d78",
+          lineHeight: 1.6,
+          fontSize: 12.5,
+        }}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }

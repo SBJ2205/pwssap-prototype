@@ -1,0 +1,489 @@
+import { useEffect, useState, useMemo } from "react";
+import { clearTeachers, getTeachers, getSubjects, importTeachers, getTeacherCapabilities } from "../../api/catalog";
+import { apiErrorMessage, getApiErrorDetails } from "../../api/client";
+import { downloadCsv, parseCsvText, TEACHER_CSV_TEMPLATE } from "../../utils/csv";
+import { td } from "../../constants";
+import { Card, PageHeader, InfoBox, MetricsRow } from "../../components/ui";
+
+export default function AdminTeachers({ reload, setPage }) {
+  const [teachers, setTeachers] = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [capabilities, setCapabilities] = useState({}); // { [teacherId]: [subjectCode, ...] }
+  const [subjectLoads, setSubjectLoads] = useState({}); // { [teacherId]: { [subjectCode]: maxHours } }
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // File upload state
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [previewData, setPreviewData] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(null);
+  const [uploadErrors, setUploadErrors] = useState(null);
+
+  // Filter & search
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedSubjectFilter, setSelectedSubjectFilter] = useState("all");
+  const [showSubjectNames, setShowSubjectNames] = useState(false);
+
+  async function loadTeacherData() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [tData, sData] = await Promise.all([
+        getTeachers(),
+        getSubjects(),
+      ]);
+      setTeachers(tData || []);
+      setSubjects(sData || []);
+
+      // Fetch capabilities for each teacher
+      const caps = {};
+      const loads = {};
+      await Promise.all(
+        (tData || []).map(async t => {
+          try {
+            const res = await getTeacherCapabilities(t.teacher_id);
+            caps[t.teacher_id] = res.subject_codes || [];
+            loads[t.teacher_id] = res.subject_loads || {};
+          } catch {
+            caps[t.teacher_id] = [];
+          }
+        })
+      );
+      setCapabilities(caps);
+      setSubjectLoads(loads);
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadTeacherData();
+  }, []);
+
+  function handleFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSelectedFile(file);
+    setUploadErrors(null);
+    setUploadSuccess(null);
+
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const text = evt.target?.result;
+      if (typeof text === "string") {
+        const parsed = parseCsvText(text, 1000);
+        setPreviewData(parsed);
+      }
+    };
+    reader.readAsText(file, "UTF-8");
+  }
+
+  async function handleImport() {
+    if (!selectedFile) return;
+    setUploading(true);
+    setUploadErrors(null);
+    setUploadSuccess(null);
+
+    try {
+      const res = await importTeachers(selectedFile);
+      setUploadSuccess(`Successfully imported ${res.count} teachers with ${res.capabilities} subject capabilities!`);
+      setSelectedFile(null);
+      setPreviewData(null);
+      await loadTeacherData();
+      if (reload) reload();
+    } catch (err) {
+      const details = getApiErrorDetails(err);
+      if (details?.row_errors) {
+        setUploadErrors(details);
+      } else {
+        setUploadErrors({ message: apiErrorMessage(err), row_errors: [] });
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleClearTeachers() {
+    if (!window.confirm("Clear every teacher? This also removes capabilities, availability, teacher assignments, generated sections, and solver cycles. Subjects and students will remain.")) return;
+    setError(null);
+    setUploadSuccess(null);
+    try {
+      const result = await clearTeachers();
+      setTeachers([]);
+      setCapabilities({});
+      setSubjectLoads({});
+      setUploadSuccess(`Cleared ${result.cleared_count} teacher(s). Upload the replacement roster to continue.`);
+      if (reload) reload();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    }
+  }
+
+  const subjectMap = useMemo(() => {
+    return Object.fromEntries(subjects.map(s => [s.subject_code, s]));
+  }, [subjects]);
+
+  const filteredTeachers = useMemo(() => {
+    return teachers.filter(t => {
+      const caps = capabilities[t.teacher_id] || [];
+      if (selectedSubjectFilter !== "all" && !caps.includes(selectedSubjectFilter)) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesId = t.teacher_id.toLowerCase().includes(q);
+        const matchesName = t.teacher_name.toLowerCase().includes(q);
+        const matchesSubj = caps.some(c => c.toLowerCase().includes(q));
+        if (!matchesId && !matchesName && !matchesSubj) return false;
+      }
+      return true;
+    });
+  }, [teachers, capabilities, selectedSubjectFilter, searchQuery]);
+
+  const totalCapsCount = Object.values(capabilities).reduce((sum, list) => sum + list.length, 0);
+
+  return (
+    <div>
+      <PageHeader
+        title="Teacher Roster & Capabilities"
+        sub="Faculty profiles and their qualified course assignments across the department."
+      />
+
+      <InfoBox title="Teacher Capability Rules">
+        The teacher CSV uses a flexible format: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name</code>,
+        followed by <strong>subject codes</strong> in subsequent cells (e.g. <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>T001, Dr. Sharma, IT301, IT302</code>).
+        <br />
+        <strong>Prerequisite:</strong> Referenced subject codes must already exist in the Subject Catalog.
+        Upload subjects first before importing teachers.
+      </InfoBox>
+
+      {/* Metrics */}
+      <MetricsRow
+        items={[
+          { val: teachers.length, label: "Total Faculty", tip: "Count of all teachers imported." },
+          { val: totalCapsCount, label: "Total Capabilities", tip: "Sum of all teacher-to-subject capability qualifications." },
+          { val: teachers.length > 0 ? (totalCapsCount / teachers.length).toFixed(1) : 0, label: "Avg Subjects / Teacher", tip: "Average number of qualified subjects per teacher." },
+          { val: subjects.length, label: "Subjects in Catalog", tip: "Total subjects available for capability mapping." },
+        ]}
+      />
+
+      {/* Import & Template Card */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Import Teachers via CSV</div>
+            <div style={{ fontSize: 12, color: "#777" }}>
+              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, ...</code>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={handleClearTeachers}
+              disabled={uploading || teachers.length === 0}
+              style={{ padding: "6px 12px", background: uploading || teachers.length === 0 ? "#eee" : "#FCEBEB", color: uploading || teachers.length === 0 ? "#aaa" : "#791F1F", border: "1px solid #F7C1C1", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: uploading || teachers.length === 0 ? "not-allowed" : "pointer" }}
+            >
+              Clear All Teachers
+            </button>
+
+            <button
+              onClick={() => downloadCsv("teachers_template.csv", TEACHER_CSV_TEMPLATE)}
+              style={{
+                padding: "6px 14px",
+                background: "#f1efe8",
+                border: "1px solid #d1cfc7",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              📥 Download Template CSV
+            </button>
+
+            {teachers.length > 0 && setPage && (
+              <button
+                onClick={() => setPage("admin-availability")}
+                style={{
+                  padding: "6px 14px",
+                  background: "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Next: Faculty Availability (Step 4) →
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* File input & action */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handleFileSelect}
+            style={{ fontSize: 13 }}
+          />
+          {selectedFile && (
+            <button
+              onClick={handleImport}
+              disabled={uploading}
+              style={{
+                padding: "8px 20px",
+                background: uploading ? "#aaa" : "#185FA5",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: uploading ? "not-allowed" : "pointer",
+              }}
+            >
+              {uploading ? "Importing…" : "Upload & Map Capabilities"}
+            </button>
+          )}
+        </div>
+
+        {/* Success message */}
+        {uploadSuccess && (
+          <div style={{ background: "#EAF3DE", border: "1px solid #C0DD97", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#27500A", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <span>✓ {uploadSuccess}</span>
+            {setPage && (
+              <button
+                onClick={() => setPage("admin-availability")}
+                style={{
+                  background: "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Next: Faculty Availability (Step 4) →
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Server Validation Errors */}
+        {uploadErrors && (
+          <div style={{ background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#791F1F", marginBottom: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>
+              ✕ Import Rejected: {uploadErrors.message || "Please resolve the errors below and re-upload."}
+            </div>
+            {uploadErrors.row_errors?.length > 0 && (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8, background: "#fff", borderRadius: 6, overflow: "hidden" }}>
+                <thead>
+                  <tr style={{ background: "#F7D8D8", textAlign: "left" }}>
+                    <th style={{ padding: "6px 10px", width: 80 }}>Row #</th>
+                    <th style={{ padding: "6px 10px" }}>Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {uploadErrors.row_errors.map((err, idx) => (
+                    <tr key={idx} style={{ borderBottom: "1px solid #FCEBEB" }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 600 }}>{err.row === 0 ? "File" : `Row ${err.row}`}</td>
+                      <td style={{ padding: "6px 10px" }}>{err.errors?.join("; ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* Preview of selected CSV */}
+        {previewData && (
+          <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6 }}>
+              CSV Preview ({previewData.rows.length} data rows loaded):
+            </div>
+            <div style={{ maxHeight: 320, overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, background: "#faf9f6" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #ddd" }}>
+                    {previewData.header.map((h, i) => (
+                      <th key={i} style={{ padding: "4px 8px", textAlign: "left", color: "#666" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewData.rows.map((row, rIdx) => (
+                    <tr key={rIdx} style={{ borderBottom: "1px solid #eee" }}>
+                      {row.map((cell, cIdx) => (
+                        <td key={cIdx} style={{ padding: "4px 8px" }}>{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Roster & Capabilities List */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+            {/* Subject Filter */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#666" }}>Filter by Subject:</span>
+              <select
+                value={selectedSubjectFilter}
+                onChange={e => setSelectedSubjectFilter(e.target.value)}
+                style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12 }}
+              >
+                <option value="all">All Subjects</option>
+                {subjects.map(s => (
+                  <option key={s.subject_code} value={s.subject_code}>
+                    {s.subject_code} — {s.subject_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Toggle Subject Names */}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#475569", cursor: "pointer", userSelect: "none" }}>
+              <input
+                type="checkbox"
+                checked={showSubjectNames}
+                onChange={e => setShowSubjectNames(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <span>Show subject names</span>
+            </label>
+          </div>
+
+          {/* Search box */}
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search teacher ID, name, code…"
+            style={{
+              padding: "6px 12px",
+              border: "1px solid #ccc",
+              borderRadius: 6,
+              fontSize: 13,
+              width: 240,
+            }}
+          />
+        </div>
+
+        {loading ? (
+          <div style={{ padding: "24px 0", textAlign: "center", color: "#888" }}>⏳ Loading teachers…</div>
+        ) : error ? (
+          <div style={{ color: "#791F1F", padding: "12px 0" }}>✕ {error}</div>
+        ) : filteredTeachers.length === 0 ? (
+          <div style={{ padding: "24px 0", textAlign: "center", color: "#888", fontSize: 13 }}>
+            {teachers.length === 0 ? "No teachers imported yet. Upload a CSV above." : "No teachers match your search."}
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#f9f8f5", borderBottom: "1.5px solid #e0ddd8" }}>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555", width: 110 }}>Teacher ID</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555", width: 190 }}>Name</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: "#555" }}>Subject Capabilities</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTeachers.map(t => {
+                  const caps = capabilities[t.teacher_id] || [];
+                  const loads = subjectLoads[t.teacher_id] || {};
+                  return (
+                    <tr key={t.teacher_id} style={{ borderBottom: "1px solid #f0efeb" }}>
+                      <td style={{ ...td, fontWeight: 700 }}>
+                        <code style={{ background: "#f1efe8", padding: "2px 6px", borderRadius: 4 }}>
+                          {t.teacher_id}
+                        </code>
+                      </td>
+                      <td style={{ ...td, fontWeight: 600 }}>{t.teacher_name}</td>
+                      <td style={td}>
+                        {caps.length === 0 ? (
+                          <span style={{ color: "#aaa", fontSize: 12, fontStyle: "italic" }}>
+                            No capabilities assigned
+                          </span>
+                        ) : (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                            {caps.map(code => {
+                              const s = subjectMap[code];
+                              const maxLoad = loads[code];
+                              return (
+                                <span
+                                  key={code}
+                                  title={s ? `${s.subject_code} — ${s.subject_name}\nType: ${s.type} | Semester ${s.semester}\nMax Weekly Load: ${maxLoad != null ? `${maxLoad}h/week` : "Not specified"}` : `${code}${maxLoad != null ? ` (max ${maxLoad}h/wk)` : ""}`}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    background: "#F8FAFC",
+                                    border: "1px solid #CBD5E1",
+                                    borderRadius: 6,
+                                    padding: "3px 8px",
+                                    fontSize: 12,
+                                    boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  <span style={{ fontWeight: 700, color: "#0F172A", fontFamily: "monospace", fontSize: 12 }}>
+                                    {code}
+                                  </span>
+                                  {maxLoad != null && (
+                                    <span style={{
+                                      background: "#E0F2FE",
+                                      color: "#0369A1",
+                                      fontWeight: 600,
+                                      padding: "1px 6px",
+                                      borderRadius: 4,
+                                      fontSize: 11,
+                                    }}>
+                                      {maxLoad}h/wk
+                                    </span>
+                                  )}
+                                  {showSubjectNames && s && (
+                                    <span style={{
+                                      color: "#64748B",
+                                      fontSize: 11,
+                                      maxWidth: 160,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}>
+                                      {s.subject_name}
+                                    </span>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
