@@ -13,7 +13,7 @@ This endpoint is synchronous (runs the solver in the request thread).
 For large instances the 30-second CP-SAT time limit is the natural
 bound; the solver returns FEASIBLE rather than OPTIMAL if it times out.
 
-Optional query param: ?time_limit=<seconds> (default 30, max 240).
+Optional query param: ?time_limit=<seconds> (default 30, max 3600).
 """
 from typing import Optional
 
@@ -50,7 +50,7 @@ def _section_to_dict(section: Section) -> dict:
 @router.post("/{run_id}/solve")
 def solve_run(
     run_id: int,
-    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=240.0),
+    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=3600.0),
     store: InMemoryStore = Depends(get_store),
 ):
     """Trigger the CP-SAT optimisation for a run.
@@ -91,7 +91,7 @@ def solve_run(
 @router.post("/{run_id}/feasibility")
 def check_feasibility(
     run_id: int,
-    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=240.0),
+    time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=3600.0),
     store: InMemoryStore = Depends(get_store),
 ):
     """Check hard constraints without optimizing or publishing results."""

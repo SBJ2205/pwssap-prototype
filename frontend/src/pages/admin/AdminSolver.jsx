@@ -358,19 +358,20 @@ export default function AdminSolver({
         </div>
 
         {/* Solver Configuration */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
           <label style={{ fontSize: 13, fontWeight: 600, color: "#444" }}>
             Solver Time Limit:
           </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <input
               type="number"
               min="5"
-              max="240"
+              max="3600"
+              step="5"
               value={timeLimit}
               onChange={e => setTimeLimit(Number(e.target.value))}
               style={{
-                width: 70,
+                width: 76,
                 padding: "6px 8px",
                 border: "1px solid #ccc",
                 borderRadius: 6,
@@ -378,7 +379,36 @@ export default function AdminSolver({
                 fontWeight: 600,
               }}
             />
-            <span style={{ fontSize: 12, color: "#888" }}>seconds (default: 30s, maximum: 240s)</span>
+            <span style={{ fontSize: 12, color: "#888" }}>seconds (up to 3600s / 1 hr)</span>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              {[
+                { label: "30s", val: 30 },
+                { label: "1m", val: 60 },
+                { label: "5m", val: 300 },
+                { label: "10m", val: 600 },
+                { label: "30m", val: 1800 },
+              ].map(preset => (
+                <button
+                  key={preset.val}
+                  type="button"
+                  onClick={() => setTimeLimit(preset.val)}
+                  style={{
+                    background: timeLimit === preset.val ? "#185FA5" : "#f1efe8",
+                    color: timeLimit === preset.val ? "#fff" : "#475569",
+                    border: "1px solid",
+                    borderColor: timeLimit === preset.val ? "#185FA5" : "#d1cfc7",
+                    borderRadius: 4,
+                    padding: "3px 8px",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    transition: "all 0.1s ease",
+                  }}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
