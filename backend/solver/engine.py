@@ -40,13 +40,14 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from ortools.sat.python import cp_model
 
-from domain.enums import PreferenceRating, SubjectType
+from domain.enums import PreferenceRating
 from domain.models import Meeting, Section
 from domain.timeslots import TimeSlot
+from solver.gap_reduction import reduce_schedule_gaps
 
 
 _TIME_PREF_PENALTY: Dict[int, int] = {
@@ -553,9 +554,6 @@ def solve(inp: SolverInput) -> SolverResult:
                             for ot in other_terms:
                                 m1.add(ot + cd_act <= 1)
 
-
-
-
     # Stage 1 Objective: Faculty teaching load balance
     if len(all_teacher_ids) >= 2:
         teacher_load: Dict[str, List[cp_model.IntVar]] = {t: [] for t in all_teacher_ids}
@@ -863,7 +861,6 @@ def solve(inp: SolverInput) -> SolverResult:
     # STAGE 3: Post-Processing Schedule Gap Reduction Pass
     # ══════════════════════════════════════════════════════════════════════════
     if not inp.feasibility_only and res.status in ("OPTIMAL", "FEASIBLE") and res.student_section_assignments:
-        from solver.gap_reduction import reduce_schedule_gaps
         updated_assignments, gap_stats = reduce_schedule_gaps(
             inp=inp,
             assigned_meetings=assigned_meetings,

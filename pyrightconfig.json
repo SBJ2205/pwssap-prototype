@@ -3,6 +3,7 @@
     "backend"
   ],
   "extraPaths": [
-    "backend"
+    "backend",
+    "backend/venv/Lib/site-packages"
   ]
 }

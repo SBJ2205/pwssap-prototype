@@ -46,7 +46,6 @@ def _section_to_dict(section: Section) -> dict:
     }
 
 
-
 @router.post("/{run_id}/solve")
 def solve_run(
     run_id: int,

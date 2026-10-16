@@ -11,11 +11,10 @@ compress their daily schedules into contiguous blocks, subject to:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from domain.enums import PreferenceRating
-from domain.models import Meeting, Section
-from domain.timeslots import TimeSlot
+from domain.models import Meeting
 
 
 _TIME_PENALTIES: Dict[int, int] = {
@@ -63,7 +62,7 @@ def compute_student_gaps(sids: Iterable[int], assigned_meetings: Dict[int, List[
 def reduce_schedule_gaps(
     inp,
     assigned_meetings: Dict[int, List[Meeting]],
-    assigned_teachers: Dict[int, Optional[str]],
+    assigned_teachers: Mapping[int, Optional[str]],
     student_assignments: Dict[str, Dict[str, int]],
     max_passes: int = 5,
 ) -> Tuple[Dict[str, Dict[str, int]], Dict[str, int]]:
