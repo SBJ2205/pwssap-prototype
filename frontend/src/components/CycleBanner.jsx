@@ -6,12 +6,21 @@ export default function CycleBanner({ cycleStatus, onInitializeCycle, onNavigate
   const {
     active_semesters = [],
     total_subjects = 0,
+    subjects_per_semester = {},
+    students_per_semester = {},
     lock_in_complete_count = 0,
     lock_in_total_students = 0,
     current_run,
   } = cycleStatus;
 
-  const hasCatalogData = total_subjects > 0 || active_semesters.length > 0;
+  const totalStudents = lock_in_total_students ||
+    Object.values(students_per_semester || {}).reduce((a, b) => a + b, 0);
+  const totalSubjects = total_subjects ||
+    Object.values(subjects_per_semester || {}).reduce((a, b) => a + b, 0);
+
+  const hasStudentData = totalStudents > 0;
+  const hasSubjectData = totalSubjects > 0;
+  const hasDataReady = hasStudentData && hasSubjectData;
   const runStatus = current_run?.status?.toUpperCase();
 
   const statusColor =
@@ -63,7 +72,7 @@ export default function CycleBanner({ cycleStatus, onInitializeCycle, onNavigate
           <Badge color={statusColor}>
             {runStatus === "PUBLISHED" ? "✓ Timetable Published" : "Run " + current_run.id + ": " + runStatus}
           </Badge>
-        ) : hasCatalogData ? (
+        ) : hasDataReady ? (
           onInitializeCycle && (
             <button
               onClick={onInitializeCycle}
@@ -81,6 +90,22 @@ export default function CycleBanner({ cycleStatus, onInitializeCycle, onNavigate
               Initialize Cycle Run →
             </button>
           )
+        ) : !hasStudentData ? (
+          <button
+            onClick={() => onNavigate && onNavigate("admin-students")}
+            style={{
+              background: "#f1f5f9",
+              color: "#334155",
+              border: "1px solid #cbd5e1",
+              borderRadius: 6,
+              padding: "5px 12px",
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            Import Students to Start →
+          </button>
         ) : (
           <button
             onClick={() => onNavigate && onNavigate("admin-subjects")}
@@ -95,7 +120,7 @@ export default function CycleBanner({ cycleStatus, onInitializeCycle, onNavigate
               cursor: "pointer",
             }}
           >
-            Import Subjects to Start →
+            Import Subjects & Choices →
           </button>
         )}
       </div>
