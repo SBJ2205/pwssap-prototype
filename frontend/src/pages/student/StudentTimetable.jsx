@@ -180,7 +180,7 @@ export default function StudentTimetable({ session }) {
               Department of Information Technology — Student Timetable
             </div>
             <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
-              Academic Year 2025–26 · Semester {timetable.semester}
+              Academic Year 2026–27 · Semester {timetable.semester}
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -204,7 +204,7 @@ export default function StudentTimetable({ session }) {
       }}>
         <PageHeader
           title="My Timetable"
-          sub={`Signed in as ${studentName} · Roll No: ${rollNumber} · Semester ${timetable.semester} · AY 2025–26`}
+          sub={`Signed in as ${studentName} · Roll No: ${rollNumber} · Semester ${timetable.semester} · AY 2026–27`}
         />
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>

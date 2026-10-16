@@ -114,7 +114,7 @@ export default function EntryScreen({ onLogin }) {
             }}>📅</div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 17, color: "#111", letterSpacing: "-0.02em" }}>
-                PWSSAP
+                Preference-Weighted Student Section Assignment
               </div>
               <div style={{ fontSize: 11, color: "#888" }}>
                 Department Timetable System
@@ -122,7 +122,7 @@ export default function EntryScreen({ onLogin }) {
             </div>
           </div>
           <p style={{ fontSize: 12, color: "#999", margin: "8px 0 0", lineHeight: 1.5 }}>
-            IT Department · VIT Mumbai · AY 2025–26
+            INFT Department · VIT Mumbai · AY 2026–27
           </p>
         </div>
 
@@ -192,9 +192,9 @@ export default function EntryScreen({ onLogin }) {
           gap: 8,
         }}>
           {[
-            { label: "Admin",   hint: "admin",        color: "#185FA5", bg: "#E6F1FB" },
-            { label: "Student", hint: "roll number",  color: "#7F77DD", bg: "#EEEDFB" },
-            { label: "Teacher", hint: "teacher ID",   color: "#1D9E75", bg: "#E5F5EF" },
+            { label: "Admin", hint: "admin", color: "#185FA5", bg: "#E6F1FB" },
+            { label: "Student", hint: "roll number", color: "#7F77DD", bg: "#EEEDFB" },
+            { label: "Teacher", hint: "teacher ID", color: "#1D9E75", bg: "#E5F5EF" },
           ].map(({ label, hint, color, bg }) => (
             <div key={label} style={{
               flex: 1, textAlign: "center",
