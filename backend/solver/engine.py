@@ -997,7 +997,7 @@ def solve(inp: SolverInput) -> SolverResult:
         fallback_res.wall_time_seconds = round(total_time, 3)
         fallback_res.warnings.append(
             f"All {len(candidate_results)} candidates timed out before finding a feasible timetable. "
-            f"The time budget per candidate ({time_per_cand:.1f}s) was too short for this department size ({len(sections)} sections). "
+            f"The time budget per candidate ({time_per_cand:.1f}s) was too short for this department size ({len(inp.sections)} sections). "
             f"Please run with 1 Candidate or increase the Solver Time Limit (e.g. 180s for 3 candidates, 300s for 5 candidates)."
         )
         return fallback_res

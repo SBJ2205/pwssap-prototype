@@ -24,7 +24,7 @@ Student-facing route (no admin role required — product decision #14):
       Return the student's section assignments and the full timetable
       detail for each (used by Phase 11 student timetable view).
 """
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
