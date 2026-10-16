@@ -54,7 +54,7 @@ _TIME_PREF_PENALTY: Dict[int, int] = {
     PreferenceRating.PREFERRED.value: 0,
     PreferenceRating.TOLERABLE.value: 1,
     PreferenceRating.DISLIKED.value:  3,
-    PreferenceRating.BLOCKED.value:   9999,
+    PreferenceRating.BLOCKED.value:   400,  # 400 * _TIME_WEIGHT (5) = 2,000 priority penalty
 }
 _DEFAULT_TIME_PENALTY = 2
 
@@ -592,7 +592,7 @@ def _solve_single_pass(
             m1.add(load_range == max_load - min_load)
             stage1_obj_terms.append(cp_model.LinearExpr.term(load_range, 10))
 
-    # Cohort aggregated student slot preference
+    # Cohort aggregated student slot preference + Proactive Blocked Slot Avoidance
     if inp.subject_students and inp.time_preferences:
         for section in sections:
             sid = section.id
@@ -603,25 +603,32 @@ def _solve_single_pass(
             cand_s = inp.candidate_slots.get(sid, [])
             for ci, slot in enumerate(cand_s):
                 sk = slot.key
+                blocked_students_count = sum(
+                    1 for roll in studs
+                    if inp.time_preferences.get(roll, {}).get(sk) == PreferenceRating.BLOCKED.value
+                )
                 tot_p = sum(
                     _TIME_PREF_PENALTY.get(
                         inp.time_preferences.get(roll, {}).get(sk, _DEFAULT_TIME_PENALTY),
                         _DEFAULT_TIME_PENALTY,
                     )
                     for roll in studs
+                    if inp.time_preferences.get(roll, {}).get(sk) != PreferenceRating.BLOCKED.value
                 )
                 avg_penalty = max(0, min(50, round(tot_p / len(studs))))
-                if avg_penalty > 0:
+                # Heavily penalize putting cohort sections in slots that any enrolled student has blocked
+                combined_penalty = (avg_penalty * 2) + (blocked_students_count * 300)
+                if combined_penalty > 0:
                     for mi, m in enumerate(section.meetings):
                         dur = getattr(m, "duration_hours", 2) or 2
                         if dur == 1:
                             if sid in slot_active_in and mi in slot_active_in[sid] and ci < len(slot_active_in[sid][mi]):
                                 s_act = slot_active_in[sid][mi][ci]
-                                stage1_obj_terms.append(cp_model.LinearExpr.term(s_act, avg_penalty * 2))
+                                stage1_obj_terms.append(cp_model.LinearExpr.term(s_act, combined_penalty))
                         else:
                             if sid in slot_vars_2h and mi in slot_vars_2h[sid] and ci < len(slot_vars_2h[sid][mi]):
                                 v_2h = slot_vars_2h[sid][mi][ci]
-                                stage1_obj_terms.append(cp_model.LinearExpr.term(v_2h, avg_penalty * 2))
+                                stage1_obj_terms.append(cp_model.LinearExpr.term(v_2h, combined_penalty))
 
     if stage1_obj_terms:
         m1.minimize(sum(stage1_obj_terms))
@@ -778,14 +785,8 @@ def _solve_single_pass(
             m2.add(sum(enrolled) <= section.capacity)
 
     # 2.b Student BLOCKED slots
-    for roll, sub_prefs in inp.time_preferences.items():
-        blocked_slots = {sk for sk, rating in sub_prefs.items() if rating == blocked_value}
-        if not blocked_slots:
-            continue
-        for (r, sub, sid), v in enroll_vars.items():
-            if r == roll:
-                if any(sk in blocked_slots for sk, _ in section_periods.get(sid, set())):
-                    m2.add(v == 0)
+    # Treated as high-priority soft penalties (2,000 points per meeting) in
+    # section 2.d below to steer students away while avoiding fatal INFEASIBLE bottlenecks.
 
     # 2.c Student no-clash (linear period sum constraint)
     for roll, sec_tuples in student_active_sections.items():
@@ -917,6 +918,29 @@ def _solve_single_pass(
             res.warnings.append(
                 f"Schedule gap reduction: eliminated {gap_stats['gaps_reduced']} idle slot gap(s) "
                 f"across {gap_stats['improved_students']} student(s) without violating preferences."
+            )
+
+    # Check for blocked slot assignments (fail-safe diagnostic warnings)
+    if res.status in ("OPTIMAL", "FEASIBLE") and res.student_section_assignments:
+        blocked_violations: List[Tuple[str, str, str]] = []
+        for roll, sub_assignments in res.student_section_assignments.items():
+            sub_prefs = inp.time_preferences.get(roll, {})
+            blocked_slots = {
+                sk for sk, rating in sub_prefs.items()
+                if rating == PreferenceRating.BLOCKED.value
+            }
+            if not blocked_slots:
+                continue
+            for sub, sid in sub_assignments.items():
+                for m in assigned_meetings.get(sid, []):
+                    if m.slot_key in blocked_slots:
+                        blocked_violations.append((roll, sub, m.slot_key))
+
+        if blocked_violations:
+            res.warnings.append(
+                f"Blocked slot exception: {len(blocked_violations)} assignment(s) placed students in blocked slots due to lack of alternative sections: "
+                + ", ".join([f"{roll} ({sub} @ {sk})" for roll, sub, sk in blocked_violations[:5]])
+                + (f" and {len(blocked_violations) - 5} more." if len(blocked_violations) > 5 else ".")
             )
 
     return res

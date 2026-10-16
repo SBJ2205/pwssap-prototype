@@ -7,7 +7,7 @@ CSV needs its own independent list of errors rather than a single
 raise-on-first-problem exception.
 """
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from domain.enums import PreferenceRating, SubjectType, VALID_SEMESTERS
 from domain.models import ChoiceTagConfig, Student, Subject, Teacher
@@ -180,7 +180,9 @@ class PreferenceValidationResult:
 
 
 def validate_time_slot_preferences(
-    ratings: Dict[str, int], ratable_slot_keys: Iterable[str]
+    ratings: Dict[str, int],
+    ratable_slot_keys: Iterable[str],
+    max_allowed_blocks: Optional[int] = None,
 ) -> PreferenceValidationResult:
     errors: List[str] = []
     warnings: List[str] = []
@@ -213,6 +215,14 @@ def validate_time_slot_preferences(
         1 for v in ratings.values()
         if v in (PreferenceRating.DISLIKED.value, PreferenceRating.BLOCKED.value)
     )
+
+    if max_allowed_blocks is not None and blocked_count > max_allowed_blocks:
+        errors.append(
+            f"Too many slots are marked Blocked ({blocked_count} marked). You are allowed a maximum of "
+            f"{max_allowed_blocks} blocked slot(s) for your course load. Please unblock "
+            f"{blocked_count - max_allowed_blocks} slot(s) and try again."
+        )
+        return PreferenceValidationResult(errors=errors, warnings=warnings)
 
     if total_ratable and (blocked_count / total_ratable) > BLOCKED_REJECT_RATIO:
         errors.append(
