@@ -859,4 +859,22 @@ def solve(inp: SolverInput) -> SolverResult:
         if solver2.boolean_value(v):
             res.student_section_assignments.setdefault(roll, {})[sub] = sid
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 3: Post-Processing Schedule Gap Reduction Pass
+    # ══════════════════════════════════════════════════════════════════════════
+    if not inp.feasibility_only and res.status in ("OPTIMAL", "FEASIBLE") and res.student_section_assignments:
+        from solver.gap_reduction import reduce_schedule_gaps
+        updated_assignments, gap_stats = reduce_schedule_gaps(
+            inp=inp,
+            assigned_meetings=assigned_meetings,
+            assigned_teachers=assigned_teachers,
+            student_assignments=res.student_section_assignments,
+        )
+        res.student_section_assignments = updated_assignments
+        if gap_stats.get("gaps_reduced", 0) > 0:
+            res.warnings.append(
+                f"Schedule gap reduction: eliminated {gap_stats['gaps_reduced']} idle slot gap(s) "
+                f"across {gap_stats['improved_students']} student(s) without violating preferences."
+            )
+
     return res
