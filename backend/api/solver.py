@@ -50,12 +50,13 @@ def _section_to_dict(section: Section) -> dict:
 def solve_run(
     run_id: int,
     time_limit: Optional[float] = Query(default=30.0, ge=1.0, le=3600.0),
+    candidates: Optional[int] = Query(default=1, ge=1, le=10),
     store: InMemoryStore = Depends(get_store),
 ):
     """Trigger the CP-SAT optimisation for a run.
 
     Returns the solver status, solver diagnostics, updated section list
-    (with optimised teacher/slot assignments), and warnings.
+    (with optimised teacher/slot assignments), candidate solutions, and warnings.
 
     On OPTIMAL or FEASIBLE: run status is set to PUBLISHED and the store
     is updated.  On INFEASIBLE or UNKNOWN: the store is unchanged and the
@@ -65,16 +66,22 @@ def solve_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
+    # Clear any previous cancellation requests for this run
+    store.cancel_requested_runs.discard(run_id)
+
     try:
         result = run_solver_for_run(
-            run_id=run_id, store=store, time_limit_seconds=time_limit or 30.0
+            run_id=run_id,
+            store=store,
+            time_limit_seconds=time_limit or 30.0,
+            candidate_count=candidates or 1,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     sections = store.list_sections_for_run(run_id)
 
-    return {
+    resp = {
         "run_id": run_id,
         "status": result.status,
         "run_status": run.status.value,
@@ -83,8 +90,32 @@ def solve_run(
         "num_conflicts": result.num_conflicts,
         "sections": [_section_to_dict(s) for s in sections],
         "student_section_assignments": result.student_section_assignments,
+        "candidates": result.candidates,
         "warnings": result.warnings,
     }
+
+    # Cache for UI persistence across page switches
+    store.latest_solve_results[run_id] = resp
+    return resp
+
+
+@router.get("/{run_id}/solve-result")
+def get_solve_result(run_id: int, store: InMemoryStore = Depends(get_store)):
+    """Retrieve the cached solver diagnostics and leaderboard for a run."""
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    result = store.latest_solve_results.get(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No solve result recorded for this run")
+    return result
+
+
+@router.post("/{run_id}/cancel")
+def cancel_solve(run_id: int, store: InMemoryStore = Depends(get_store)):
+    """Request early cancellation of an active solver execution."""
+    store.cancel_requested_runs.add(run_id)
+    return {"run_id": run_id, "status": "cancellation_requested"}
 
 
 @router.post("/{run_id}/feasibility")

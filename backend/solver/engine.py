@@ -40,7 +40,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from ortools.sat.python import cp_model
 
@@ -86,6 +86,9 @@ class SolverInput:
     subject_subtags: Dict[str, List[str]] = field(default_factory=dict)
     feasibility_only: bool = False
     time_limit_seconds: float = 30.0
+    candidate_count: int = 1
+    random_seed: int = 42
+    cancel_check: Optional[Callable[[], bool]] = None
 
 
 @dataclass
@@ -99,9 +102,14 @@ class SolverResult:
     num_conflicts: int = 0
     objective_value: int = 0
     warnings: List[str] = field(default_factory=list)
+    candidates: List[Dict] = field(default_factory=list)
 
 
-def solve(inp: SolverInput) -> SolverResult:
+def _solve_single_pass(
+    inp: SolverInput,
+    seed: int = 42,
+    time_limit: Optional[float] = None,
+) -> SolverResult:
     sections = inp.sections
     section_by_id: Dict[int, Section] = {s.id: s for s in sections if s.id is not None}
 
@@ -116,6 +124,7 @@ def solve(inp: SolverInput) -> SolverResult:
         subject_sections.setdefault(section.subject_code, []).append(section.id)
 
     total_t0 = time.monotonic()
+    effective_time_limit = float(time_limit) if time_limit is not None else float(inp.time_limit_seconds)
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 1: Automated Master Timetable Generation (Sections + Slots + Faculty)
@@ -554,7 +563,9 @@ def solve(inp: SolverInput) -> SolverResult:
                             for ot in other_terms:
                                 m1.add(ot + cd_act <= 1)
 
-    # Stage 1 Objective: Faculty teaching load balance
+    # Stage 1 Objective: Faculty teaching load balance + Cohort slot preferences (Student-aware Master TT)
+    stage1_obj_terms: List[cp_model.LinearExpr] = []
+
     if len(all_teacher_ids) >= 2:
         teacher_load: Dict[str, List[cp_model.IntVar]] = {t: [] for t in all_teacher_ids}
         for section in sections:
@@ -579,13 +590,47 @@ def solve(inp: SolverInput) -> SolverResult:
             m1.add_min_equality(min_load, load_list)
             load_range = m1.new_int_var(0, len(sections), "load_range")
             m1.add(load_range == max_load - min_load)
-            m1.minimize(load_range)
+            stage1_obj_terms.append(cp_model.LinearExpr.term(load_range, 10))
+
+    # Cohort aggregated student slot preference
+    if inp.subject_students and inp.time_preferences:
+        for section in sections:
+            sid = section.id
+            sub_code = section.subject_code
+            studs = inp.subject_students.get(sub_code, [])
+            if not studs:
+                continue
+            cand_s = inp.candidate_slots.get(sid, [])
+            for ci, slot in enumerate(cand_s):
+                sk = slot.key
+                tot_p = sum(
+                    _TIME_PREF_PENALTY.get(
+                        inp.time_preferences.get(roll, {}).get(sk, _DEFAULT_TIME_PENALTY),
+                        _DEFAULT_TIME_PENALTY,
+                    )
+                    for roll in studs
+                )
+                avg_penalty = max(0, min(50, round(tot_p / len(studs))))
+                if avg_penalty > 0:
+                    for mi, m in enumerate(section.meetings):
+                        dur = getattr(m, "duration_hours", 2) or 2
+                        if dur == 1:
+                            if sid in slot_active_in and mi in slot_active_in[sid] and ci < len(slot_active_in[sid][mi]):
+                                s_act = slot_active_in[sid][mi][ci]
+                                stage1_obj_terms.append(cp_model.LinearExpr.term(s_act, avg_penalty * 2))
+                        else:
+                            if sid in slot_vars_2h and mi in slot_vars_2h[sid] and ci < len(slot_vars_2h[sid][mi]):
+                                v_2h = slot_vars_2h[sid][mi][ci]
+                                stage1_obj_terms.append(cp_model.LinearExpr.term(v_2h, avg_penalty * 2))
+
+    if stage1_obj_terms:
+        m1.minimize(sum(stage1_obj_terms))
 
     # Solve Stage 1
     solver1 = cp_model.CpSolver()
-    solver1.parameters.max_time_in_seconds = max(1.0, min(inp.time_limit_seconds * 0.5, 30.0))
+    solver1.parameters.max_time_in_seconds = max(1.0, min(effective_time_limit * 0.7, 45.0))
     solver1.parameters.num_workers = 0
-    solver1.parameters.random_seed = 42
+    solver1.parameters.random_seed = seed
 
     t0_stage1 = time.monotonic()
     status1 = solver1.solve(m1)
@@ -795,10 +840,10 @@ def solve(inp: SolverInput) -> SolverResult:
                     obj_terms.append(cp_model.LinearExpr.term(dev, 2))
 
     # Solve Stage 2
-    rem_time = max(1.0, inp.time_limit_seconds - stage1_elapsed)
+    rem_time = max(1.0, effective_time_limit - stage1_elapsed)
     solver2 = cp_model.CpSolver()
     solver2.parameters.num_workers = 0
-    solver2.parameters.random_seed = 42
+    solver2.parameters.random_seed = seed
 
     if inp.feasibility_only or not obj_terms:
         solver2.parameters.max_time_in_seconds = rem_time
@@ -809,7 +854,7 @@ def solve(inp: SolverInput) -> SolverResult:
         solver2_feas = cp_model.CpSolver()
         solver2_feas.parameters.max_time_in_seconds = min(20.0, max(5.0, rem_time * 0.75))
         solver2_feas.parameters.num_workers = 0
-        solver2_feas.parameters.random_seed = 42
+        solver2_feas.parameters.random_seed = seed
         solver2_feas.parameters.stop_after_first_solution = True
         status_feas = solver2_feas.solve(m2)
 
@@ -818,7 +863,7 @@ def solve(inp: SolverInput) -> SolverResult:
             for k, v in enroll_vars.items():
                 m2.add_hint(v, 1 if solver2_feas.boolean_value(v) else 0)
             m2.minimize(sum(obj_terms))
-            rem_time_opt = max(1.0, inp.time_limit_seconds - (time.monotonic() - total_t0))
+            rem_time_opt = max(1.0, effective_time_limit - (time.monotonic() - total_t0))
             solver2.parameters.max_time_in_seconds = rem_time_opt
             status2 = solver2.solve(m2)
             if status2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -875,3 +920,84 @@ def solve(inp: SolverInput) -> SolverResult:
             )
 
     return res
+
+
+def solve(inp: SolverInput) -> SolverResult:
+    """Entrypoint for CP-SAT timetable generation.
+
+    If candidate_count > 1, executes a multi-start portfolio search across
+    distinct master timetables and selects the one with minimum student penalty.
+    """
+    if inp.candidate_count <= 1 or inp.feasibility_only:
+        res = _solve_single_pass(inp, seed=inp.random_seed, time_limit=inp.time_limit_seconds)
+        res.candidates = [
+            {
+                "candidate_id": 1,
+                "seed": inp.random_seed,
+                "status": res.status,
+                "objective_value": res.objective_value,
+                "wall_time_seconds": res.wall_time_seconds,
+                "num_conflicts": res.num_conflicts,
+                "is_best": True,
+            }
+        ]
+        return res
+
+    num_candidates = min(10, max(2, int(inp.candidate_count)))
+    time_per_cand = max(5.0, inp.time_limit_seconds / num_candidates)
+    seeds = [42, 101, 202, 303, 404, 505, 606, 707, 808, 909][:num_candidates]
+
+    candidate_results: List[SolverResult] = []
+    candidate_summaries: List[Dict] = []
+    was_cancelled = False
+
+    for idx, s in enumerate(seeds):
+        if inp.cancel_check and inp.cancel_check():
+            was_cancelled = True
+            break
+        cand_res = _solve_single_pass(inp, seed=s, time_limit=time_per_cand)
+        candidate_results.append(cand_res)
+        candidate_summaries.append({
+            "candidate_id": idx + 1,
+            "seed": s,
+            "status": cand_res.status,
+            "objective_value": cand_res.objective_value,
+            "wall_time_seconds": cand_res.wall_time_seconds,
+            "num_conflicts": cand_res.num_conflicts,
+            "is_best": False,
+        })
+
+    if not candidate_results:
+        return SolverResult(
+            status="UNKNOWN",
+            warnings=["Solve cancelled by user before any candidate completed."],
+            candidates=candidate_summaries,
+        )
+
+    valid_candidates = [
+        (i, r) for i, r in enumerate(candidate_results)
+        if r.status in ("OPTIMAL", "FEASIBLE")
+    ]
+    if valid_candidates:
+        best_idx, best_res = min(valid_candidates, key=lambda x: x[1].objective_value)
+        candidate_summaries[best_idx]["is_best"] = True
+        best_res.candidates = candidate_summaries
+        total_time = sum(c["wall_time_seconds"] for c in candidate_summaries)
+        best_res.wall_time_seconds = round(total_time, 3)
+        msg = f"Multi-candidate evaluation: tested {len(candidate_results)} master timetables; selected Candidate #{best_idx + 1} with lowest penalty ({best_res.objective_value})."
+        if was_cancelled:
+            msg += " (Search stopped early due to user cancellation)."
+        best_res.warnings.append(msg)
+        return best_res
+    else:
+        # None of the candidates found a feasible solution within their time slice
+        fallback_res = candidate_results[0]
+        fallback_res.candidates = candidate_summaries
+        total_time = sum(c["wall_time_seconds"] for c in candidate_summaries)
+        fallback_res.wall_time_seconds = round(total_time, 3)
+        fallback_res.warnings.append(
+            f"All {len(candidate_results)} candidates timed out before finding a feasible timetable. "
+            f"The time budget per candidate ({time_per_cand:.1f}s) was too short for this department size ({len(sections)} sections). "
+            f"Please run with 1 Candidate or increase the Solver Time Limit (e.g. 180s for 3 candidates, 300s for 5 candidates)."
+        )
+        return fallback_res

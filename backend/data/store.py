@@ -67,6 +67,11 @@ class InMemoryStore:
         # admin override endpoints (enroll_student / unenroll_student).
         self.student_section_assignments: Dict[str, Dict[str, int]] = {}
 
+        # Cached solve result payloads per run_id for UI state persistence
+        self.latest_solve_results: Dict[int, Dict] = {}
+        # Set of run_ids for which cancellation has been requested
+        self.cancel_requested_runs: set = set()
+
     # ── Time slots (fixed, structural) ─────────────────────────────────────
     def list_time_slots(self) -> List[TimeSlot]:
         return self.time_slots

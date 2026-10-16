@@ -30,6 +30,7 @@ def run_solver_for_run(
     store: InMemoryStore,
     time_limit_seconds: float = 30.0,
     feasibility_only: bool = False,
+    candidate_count: int = 1,
 ) -> SolverResult:
     """Orchestrate the full solve cycle for one generation run.
 
@@ -235,6 +236,8 @@ def run_solver_for_run(
         subject_subtags=subject_subtags,
         feasibility_only=feasibility_only,
         time_limit_seconds=time_limit_seconds,
+        candidate_count=candidate_count,
+        cancel_check=lambda: run_id in store.cancel_requested_runs,
     )
 
     result = solve(inp)

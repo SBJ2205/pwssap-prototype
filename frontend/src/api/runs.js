@@ -38,10 +38,19 @@ export const getSections = (runId, subjectCode) => {
 // POST /admin/runs/{id}/solve  →  {status, sections: [...], warnings: [...]}
 // status: "OPTIMAL" | "FEASIBLE" | "INFEASIBLE"
 // After a successful solve the run transitions to PUBLISHED automatically.
-export const runSolve = (runId, timeLimit) => {
-  const params = timeLimit != null ? { time_limit: timeLimit } : {};
-  return client.post(`/admin/runs/${runId}/solve`, null, { params }).then(r => r.data);
+export const runSolve = (runId, timeLimit, candidates, signal) => {
+  const params = {
+    ...(timeLimit != null ? { time_limit: timeLimit } : {}),
+    ...(candidates != null ? { candidates } : {}),
+  };
+  return client.post(`/admin/runs/${runId}/solve`, null, { params, signal }).then(r => r.data);
 };
+
+export const getSolveResult = (runId) =>
+  client.get(`/admin/runs/${runId}/solve-result`).then(r => r.data);
+
+export const cancelSolve = (runId) =>
+  client.post(`/admin/runs/${runId}/cancel`).then(r => r.data);
 
 // POST /admin/runs/{id}/feasibility — hard constraints only, no publication.
 export const checkFeasibility = (runId, timeLimit) => {
