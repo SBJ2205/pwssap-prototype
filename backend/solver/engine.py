@@ -301,6 +301,32 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
                 same_slot_vars = [slot_active_in[sid][mi][ci] for mi in range(n_meetings)]
                 m1.add(sum(same_slot_vars) <= 1)
 
+            # Same section meeting spacing:
+            # - Theory sections with multiple meetings cannot have more than 1 meeting on the same day.
+            # - Lab sections with multiple meetings cannot be back-to-back on the same day.
+            sec_type = inp.subject_types.get(section.subject_code, "")
+            day_slots = defaultdict(list)
+            for ci, slot in enumerate(cand_s):
+                day_slots[slot.day].append((slot.slot_index, ci))
+
+            for day, indexed_cis in day_slots.items():
+                if sec_type == "theory":
+                    # Max 1 meeting per day for theory
+                    all_day_vars = [
+                        slot_active_in[sid][mi][ci]
+                        for mi in range(n_meetings)
+                        for _, ci in indexed_cis
+                    ]
+                    m1.add(sum(all_day_vars) <= 1)
+                else:
+                    # Labs: cannot be in consecutive slots on the same day
+                    for idx1, ci1 in indexed_cis:
+                        for idx2, ci2 in indexed_cis:
+                            if idx2 == idx1 + 1:
+                                vars_ci1 = [slot_active_in[sid][mi][ci1] for mi in range(n_meetings)]
+                                vars_ci2 = [slot_active_in[sid][mi][ci2] for mi in range(n_meetings)]
+                                m1.add(sum(vars_ci1) + sum(vars_ci2) <= 1)
+
     # 1.d Hard teacher-subject weekly load limits
     for teacher_id in all_teacher_ids:
         for subject_code in subject_sections:

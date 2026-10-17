@@ -240,3 +240,19 @@ def test_cancelled_solve_publishes_nothing():
     assert res.status == "UNKNOWN"
     assert not res.student_section_assignments
     assert any("cancelled" in w.lower() for w in res.warnings)
+
+
+def test_multi_meeting_theory_scheduled_on_distinct_days():
+    # A 4-hour theory section with 2 meetings.
+    # The solver must schedule meeting 0 and meeting 1 on different days,
+    # never on the same day or back-to-back.
+    sec = _section(0, "FIN1", 1, meetings=2)
+    inp = _input([sec], {"FIN1": ["S1"]}, {})
+    inp.subject_types = {"FIN1": "theory"}
+    res = solve(inp)
+
+    assert res.status in ("OPTIMAL", "FEASIBLE")
+    slots = res.section_slot_assignments[0]
+    assert len(slots) == 2
+    days = [s.split("-")[0] for s in slots]
+    assert days[0] != days[1], f"Meetings landed on the same day: {slots}"
