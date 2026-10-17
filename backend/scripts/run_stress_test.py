@@ -74,7 +74,7 @@ def setup_department_data(store):
     print(f"       -> Loaded {len(parsed_teachers.teachers)} faculty members with capability matrices")
 
     # 3. Students
-    stu_csv = load_demo_csv("demo_run/students_template.csv")
+    stu_csv = load_demo_csv("demo_run/students.csv")
     parsed_stu = parse_students_csv(stu_csv)
     for s in parsed_stu.students:
         store.upsert_student(s)

@@ -6,7 +6,7 @@ the Admin / Student / Teacher UIs immediately and every server-side validation
 (including the Layer-1 dynamic block quota) is exercised.
 
 Seeds:
-  1. subjects.csv, teachers.csv, students_template.csv (admin CSV imports)
+  1. subjects.csv, teachers.csv, students.csv (admin CSV imports)
   2. choice-based tags (MDM, PE) + sem4/sem6 elective allocations (lock-in)
   3. teacher availability (HOD Thu + Tue-4, plus two committee half-days)
   4. 100% student time preferences (archetypes, quota-aware) + faculty rankings
@@ -155,7 +155,7 @@ def main():
     print("  subjects:", {k: v for k, v in r.items() if k in ("count", "status")})
     r = upload(client, "/admin/teachers/import", "teachers.csv")
     print("  teachers:", {k: v for k, v in r.items() if k in ("count", "capabilities", "status")})
-    r = upload(client, "/admin/students/import", "students_template.csv")
+    r = upload(client, "/admin/students/import", "students.csv")
     print("  students:", {k: v for k, v in r.items() if k in ("count", "status")})
 
     print("[2/5] Configuring choice tags + elective lock-ins ...")
