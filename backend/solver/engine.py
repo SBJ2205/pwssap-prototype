@@ -37,6 +37,7 @@ Hard constraints:
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -103,6 +104,35 @@ class SolverResult:
     objective_value: int = 0
     warnings: List[str] = field(default_factory=list)
     candidates: List[Dict] = field(default_factory=list)
+    # Per-stage proof status. `status` is OPTIMAL only if BOTH are OPTIMAL.
+    stage1_status: str = ""
+    stage2_status: str = ""
+    # Student placements in a slot the student blocked, in the delivered
+    # timetable; and whether that count is the proven minimum for it.
+    blocked_placements: Optional[int] = None
+    blocked_minimum_proven: Optional[bool] = None
+
+
+def _solve_cancellable(solver: cp_model.CpSolver, model: cp_model.CpModel, cancel_check) -> int:
+    """solver.solve(), but a watcher thread stops the search soon after
+    cancel_check() turns True (CP-SAT otherwise cannot be interrupted)."""
+    if cancel_check is None:
+        return solver.solve(model)
+    done = threading.Event()
+
+    def _watch() -> None:
+        while not done.wait(0.5):
+            if cancel_check():
+                solver.stop_search()
+                return
+
+    watcher = threading.Thread(target=_watch, daemon=True)
+    watcher.start()
+    try:
+        return solver.solve(model)
+    finally:
+        done.set()
+        watcher.join(timeout=2.0)
 
 
 def _solve_single_pass(
@@ -110,6 +140,40 @@ def _solve_single_pass(
     seed: int = 42,
     time_limit: Optional[float] = None,
 ) -> SolverResult:
+    res = _solve_single_pass_impl(inp, seed=seed, time_limit=time_limit)
+    if inp.cancel_check and inp.cancel_check():
+        # A cancelled pass is never a valid candidate / never gets published.
+        return SolverResult(
+            status="UNKNOWN",
+            wall_time_seconds=res.wall_time_seconds,
+            warnings=["Solve cancelled by user; no timetable was published."],
+        )
+    return res
+
+
+_STATUS_MAP = {
+    cp_model.OPTIMAL: "OPTIMAL",
+    cp_model.FEASIBLE: "FEASIBLE",
+    cp_model.INFEASIBLE: "INFEASIBLE",
+    cp_model.UNKNOWN: "UNKNOWN",
+    cp_model.MODEL_INVALID: "MODEL_INVALID",
+}
+
+
+@dataclass
+class _Stage1:
+    """Outcome of Stage 1: one concrete master timetable (slots + teachers)."""
+    status: str
+    slot_keys: Dict[int, List[str]]
+    meetings: Dict[int, List[Meeting]]
+    teachers: Dict[int, Optional[str]]
+    subject_sections: Dict[str, List[int]]
+    num_conflicts: int
+    elapsed: float
+
+
+def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional[_Stage1], Optional[SolverResult]]:
+    """Stage 1: build a master timetable. Returns (stage1, None) or (None, failure_result)."""
     sections = inp.sections
     section_by_id: Dict[int, Section] = {s.id: s for s in sections if s.id is not None}
 
@@ -124,7 +188,6 @@ def _solve_single_pass(
         subject_sections.setdefault(section.subject_code, []).append(section.id)
 
     total_t0 = time.monotonic()
-    effective_time_limit = float(time_limit) if time_limit is not None else float(inp.time_limit_seconds)
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 1: Automated Master Timetable Generation (Sections + Slots + Faculty)
@@ -259,25 +322,16 @@ def _solve_single_pass(
                 m1.add(sum(terms) <= maximum)
 
     # 1.e Single-section student clash prevention in Stage 1:
-    blocked_value = PreferenceRating.BLOCKED.value
     enrolled_set = {
         sc: set(students)
         for sc, students in inp.subject_students.items()
     }
 
-    # Avoid placing a single section in a slot blocked by any of its students
-    for subject_code, sids in subject_sections.items():
-        if len(sids) == 1:
-            sid = sids[0]
-            sec = section_by_id.get(sid)
-            if sec:
-                cand_s = inp.candidate_slots.get(sid, [])
-                for roll in enrolled_set.get(subject_code, set()):
-                    st_prefs = inp.time_preferences.get(roll, {})
-                    for ci, slot in enumerate(cand_s):
-                        if st_prefs.get(slot.key) == blocked_value:
-                            for mi in range(len(sec.meetings)):
-                                m1.add(slot_active_in[sid][mi][ci] == 0)
+    # NOTE: student-blocked slots are deliberately NOT hard-forbidden for
+    # single-section subjects. The union of a large cohort's blocked slots can
+    # cover every legal slot (e.g. 56 students of one elective), which made
+    # Stage 1 INFEASIBLE. Layer 2 (+300 per blocked student, below) steers the
+    # section away softly; any unavoidable case surfaces as a diagnostic warning.
 
     # For any two single-section subjects sharing enrolled students:
     all_single_sec_codes = [sc for sc, sids in subject_sections.items() if len(sids) == 1]
@@ -635,12 +689,12 @@ def _solve_single_pass(
 
     # Solve Stage 1
     solver1 = cp_model.CpSolver()
-    solver1.parameters.max_time_in_seconds = max(1.0, min(effective_time_limit * 0.7, 45.0))
+    solver1.parameters.max_time_in_seconds = max(1.0, solve_seconds)
     solver1.parameters.num_workers = 0
     solver1.parameters.random_seed = seed
 
     t0_stage1 = time.monotonic()
-    status1 = solver1.solve(m1)
+    status1 = _solve_cancellable(solver1, m1, inp.cancel_check)
     stage1_elapsed = time.monotonic() - t0_stage1
 
     status_map = {
@@ -658,6 +712,7 @@ def _solve_single_pass(
             status=status1_str,
             wall_time_seconds=round(elapsed, 3),
             num_conflicts=int(solver1.num_conflicts),
+            stage1_status=status1_str,
         )
         if status1 == cp_model.UNKNOWN:
             res.warnings.append(
@@ -668,7 +723,7 @@ def _solve_single_pass(
             res.warnings.append(
                 "Master timetable solver proved that no schedule satisfies teacher availability, no-clash, or load limits."
             )
-        return res
+        return None, res
 
     # Extract Stage 1 results (section meetings & teacher assignments)
     assigned_slot_keys: Dict[int, List[str]] = {}
@@ -723,18 +778,39 @@ def _solve_single_pass(
                 break
         assigned_teachers[sid] = picked_teacher
 
-    # If no students enrolled in the input, Stage 1 is the complete answer
-    has_students = any(bool(studs) for studs in inp.subject_students.values())
-    if not has_students:
-        elapsed = time.monotonic() - total_t0
-        return SolverResult(
-            status=status1_str,
-            section_slot_assignments=assigned_slot_keys,
-            section_meetings=assigned_meetings,
-            section_teacher_assignments=assigned_teachers,
-            wall_time_seconds=round(elapsed, 3),
-            num_conflicts=int(solver1.num_conflicts),
-        )
+    return _Stage1(
+        status=status1_str,
+        slot_keys=assigned_slot_keys,
+        meetings=assigned_meetings,
+        teachers=assigned_teachers,
+        subject_sections=subject_sections,
+        num_conflicts=int(solver1.num_conflicts),
+        elapsed=stage1_elapsed,
+    ), None
+
+
+def _stage2(
+    inp: SolverInput,
+    seed: int,
+    s1: _Stage1,
+    budget: float,
+    score_only: bool = False,
+) -> SolverResult:
+    """Stage 2: assign students to the sections of a FIXED master timetable.
+
+    score_only=True stops after Pass A (minimum blocked placements) and returns
+    status "SCORED" - a cheap way to compare candidate master timetables.
+    """
+    sections = inp.sections
+    subject_sections = s1.subject_sections
+    assigned_slot_keys = s1.slot_keys
+    assigned_meetings = s1.meetings
+    assigned_teachers = s1.teachers
+    status1_str = s1.status
+    status_map = _STATUS_MAP
+    total_t0 = time.monotonic()
+    effective_time_limit = float(budget)
+    stage1_elapsed = 0.0
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2: Automated Student Section Allocation
@@ -788,6 +864,7 @@ def _solve_single_pass(
     # Treated as high-priority soft penalties (2,000 points per meeting) in
     # section 2.d below to steer students away while avoiding fatal INFEASIBLE bottlenecks.
 
+
     # 2.c Student no-clash (linear period sum constraint)
     for roll, sec_tuples in student_active_sections.items():
         slot_terms: Dict[Tuple[str, int], List[cp_model.IntVar]] = {}
@@ -798,18 +875,32 @@ def _solve_single_pass(
             if len(vlist) > 1:
                 m2.add(sum(vlist) <= 1)
 
-    # 2.d Stage 2 Objectives (Preferences & Section Size Balancing)
-    obj_terms: List[cp_model.LinearExpr] = []
+    # 2.d Stage 2 objectives.
+    # Student BLOCKED placements are kept apart from every other preference
+    # term. They are minimised FIRST and on their own (Pass A), then capped at
+    # that value while all remaining preferences are optimised (Pass B).
+    # Net effect: blocked slots are treated as hard whenever the timetable
+    # allows it, and otherwise limited to the minimum possible - without the
+    # big blocked penalty drowning out (or being drowned by) other terms.
+    blocked_value = PreferenceRating.BLOCKED.value
+    blocked_terms: List[cp_model.LinearExpr] = []  # v * (#blocked meetings of that section)
+    other_terms: List[cp_model.LinearExpr] = []
     if not inp.feasibility_only:
-        # Time-slot satisfaction
         for (roll, sub, sid), v in enroll_vars.items():
             time_pref = inp.time_preferences.get(roll, {})
+            n_blocked = 0
             for m in assigned_meetings.get(sid, []):
                 rating = time_pref.get(m.slot_key)
-                if rating is not None and rating != _DEFAULT_TIME_PENALTY:
+                if rating is None:
+                    continue
+                if rating == blocked_value:
+                    n_blocked += 1
+                else:
                     penalty = _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
                     if penalty > 0:
-                        obj_terms.append(cp_model.LinearExpr.term(v, _TIME_WEIGHT * penalty))
+                        other_terms.append(cp_model.LinearExpr.term(v, _TIME_WEIGHT * penalty))
+            if n_blocked:
+                blocked_terms.append(cp_model.LinearExpr.term(v, n_blocked))
 
         # Faculty preference
         for (roll, sub, sid), v in enroll_vars.items():
@@ -821,7 +912,7 @@ def _solve_single_pass(
                 if rating is not None and rating != _DEFAULT_FACULTY_PENALTY:
                     penalty = _FACULTY_PREF_PENALTY.get(rating, _DEFAULT_FACULTY_PENALTY)
                     if penalty > 0:
-                        obj_terms.append(cp_model.LinearExpr.term(v, _FACULTY_WEIGHT * penalty))
+                        other_terms.append(cp_model.LinearExpr.term(v, _FACULTY_WEIGHT * penalty))
 
         # Parallel section size load balancing (linear absolute deviation)
         for sc, sids in subject_sections.items():
@@ -838,52 +929,133 @@ def _solve_single_pass(
                     dev = m2.new_int_var(0, tot, f"dev_{sid}")
                     m2.add(dev >= sec_count - ideal)
                     m2.add(dev >= ideal - sec_count)
-                    obj_terms.append(cp_model.LinearExpr.term(dev, 2))
+                    other_terms.append(cp_model.LinearExpr.term(dev, 2))
 
     # Solve Stage 2
     rem_time = max(1.0, effective_time_limit - stage1_elapsed)
-    solver2 = cp_model.CpSolver()
-    solver2.parameters.num_workers = 0
-    solver2.parameters.random_seed = seed
 
-    if inp.feasibility_only or not obj_terms:
-        solver2.parameters.max_time_in_seconds = rem_time
-        solver2.parameters.stop_after_first_solution = True
-        status2 = solver2.solve(m2)
+    def _new_solver(limit: float, first_solution: bool = False) -> cp_model.CpSolver:
+        s = cp_model.CpSolver()
+        s.parameters.num_workers = 0
+        s.parameters.random_seed = seed
+        s.parameters.max_time_in_seconds = max(1.0, limit)
+        if first_solution:
+            s.parameters.stop_after_first_solution = True
+        return s
+
+    def _remaining() -> float:
+        return max(1.0, effective_time_limit - (time.monotonic() - total_t0))
+
+    def _hint_from(src: cp_model.CpSolver) -> None:
+        m2.clear_hints()
+        for _k, _v in enroll_vars.items():
+            m2.add_hint(_v, 1 if src.boolean_value(_v) else 0)
+
+    stage2_notes: List[str] = []
+
+    blocked_minimum_proven: Optional[bool] = None
+    solver2: cp_model.CpSolver
+
+    if inp.feasibility_only or not (blocked_terms or other_terms):
+        solver2 = _new_solver(rem_time, first_solution=True)
+        status2 = _solve_cancellable(solver2, m2, inp.cancel_check)
+        if status2 in (cp_model.OPTIMAL, cp_model.FEASIBLE) and not inp.feasibility_only:
+            blocked_minimum_proven = True  # nothing to optimise: no blocks at all
+            if score_only:
+                return SolverResult(
+                    status="SCORED",
+                    wall_time_seconds=round(time.monotonic() - total_t0, 3),
+                    num_conflicts=int(s1.num_conflicts),
+                    stage1_status=status1_str,
+                    stage2_status="SCORED",
+                    blocked_placements=0,
+                    blocked_minimum_proven=True,
+                )
     else:
-        # Two-phase solve: first obtain a guaranteed valid assignment via feasibility pass
-        solver2_feas = cp_model.CpSolver()
-        solver2_feas.parameters.max_time_in_seconds = min(20.0, max(5.0, rem_time * 0.75))
-        solver2_feas.parameters.num_workers = 0
-        solver2_feas.parameters.random_seed = seed
-        solver2_feas.parameters.stop_after_first_solution = True
-        status_feas = solver2_feas.solve(m2)
+        # Phase 0: any valid assignment (guarantees we always have a fallback).
+        solver_feas = _new_solver(min(20.0, max(5.0, rem_time * 0.75)), first_solution=True)
+        status_feas = _solve_cancellable(solver_feas, m2, inp.cancel_check)
+        solver2, status2 = solver_feas, status_feas
 
         if status_feas in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            # Warm-start optimization using the valid feasible assignment
-            for k, v in enroll_vars.items():
-                m2.add_hint(v, 1 if solver2_feas.boolean_value(v) else 0)
-            m2.minimize(sum(obj_terms))
-            rem_time_opt = max(1.0, effective_time_limit - (time.monotonic() - total_t0))
-            solver2.parameters.max_time_in_seconds = rem_time_opt
-            status2 = solver2.solve(m2)
-            if status2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                solver2 = solver2_feas
-                status2 = status_feas
-        else:
-            solver2 = solver2_feas
-            status2 = status_feas
+            best = solver_feas
+            blocked_best = 0
+
+            # Pass A: minimise blocked placements ONLY.
+            pass_a_proven = True
+            if blocked_terms:
+                blocked_sum = sum(blocked_terms)
+                _hint_from(best)
+                m2.minimize(blocked_sum)
+                # Scoring a candidate only needs Pass A, so it may use all of the budget.
+                solver_a = _new_solver(_remaining() * (1.0 if score_only else 0.35))
+                status_a = _solve_cancellable(solver_a, m2, inp.cancel_check)
+                if status_a in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                    best = solver_a
+                    blocked_best = int(round(solver_a.objective_value))
+                    pass_a_proven = status_a == cp_model.OPTIMAL
+                else:
+                    blocked_best = int(round(solver_feas.value(blocked_sum)))
+                    pass_a_proven = False
+                blocked_minimum_proven = pass_a_proven
+            else:
+                blocked_minimum_proven = True
+
+            if score_only:
+                return SolverResult(
+                    status="SCORED",
+                    wall_time_seconds=round(time.monotonic() - total_t0, 3),
+                    num_conflicts=int(s1.num_conflicts),
+                    stage1_status=status1_str,
+                    stage2_status="SCORED",
+                    blocked_placements=blocked_best,
+                    blocked_minimum_proven=blocked_minimum_proven,
+                )
+
+            # Pass B: optimise everything else with blocked placements capped.
+            pass_b_proven = True
+            if other_terms:
+                if blocked_terms:
+                    m2.add(sum(blocked_terms) <= blocked_best)
+                _hint_from(best)
+                m2.clear_objective()
+                m2.minimize(sum(other_terms))
+                solver_b = _new_solver(_remaining())
+                status_b = _solve_cancellable(solver_b, m2, inp.cancel_check)
+                if status_b in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                    best = solver_b
+                    pass_b_proven = status_b == cp_model.OPTIMAL
+                else:
+                    pass_b_proven = False
+                    stage2_notes.append(
+                        "Student preference optimiser (Pass B) found no improvement within the time budget; "
+                        "blocked slots were minimised but other preferences were not optimised."
+                    )
+            solver2 = best
+            status2 = cp_model.OPTIMAL if (pass_a_proven and pass_b_proven) else cp_model.FEASIBLE
+
     status2_str = status_map.get(status2, "UNKNOWN")
     elapsed = time.monotonic() - total_t0
 
+    if status2 in (cp_model.OPTIMAL, cp_model.FEASIBLE) and not inp.feasibility_only:
+        # OPTIMAL means *both* stages are proven optimal; Stage 1 usually only
+        # reaches FEASIBLE within its time slice, so say so honestly.
+        overall_status = "OPTIMAL" if (status1_str == "OPTIMAL" and status2_str == "OPTIMAL") else "FEASIBLE"
+    else:
+        overall_status = status2_str
+
     res = SolverResult(
-        status=status2_str,
+        status=overall_status,
         section_slot_assignments=assigned_slot_keys,
         section_meetings=assigned_meetings,
         section_teacher_assignments=assigned_teachers,
         wall_time_seconds=round(elapsed, 3),
-        num_conflicts=int(solver1.num_conflicts + solver2.num_conflicts),
+        num_conflicts=int(s1.num_conflicts + solver2.num_conflicts),
+        stage1_status=status1_str,
+        stage2_status=status2_str,
+        blocked_minimum_proven=blocked_minimum_proven,
     )
+    res.warnings.extend(stage2_notes)
 
     if status2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         if status2 == cp_model.UNKNOWN:
@@ -895,8 +1067,6 @@ def _solve_single_pass(
                 "Student allocation proved infeasible. Section capacities or student clash constraints could not be satisfied."
             )
         return res
-
-    res.objective_value = int(solver2.objective_value) if not inp.feasibility_only else 0
 
     # Extract student-section assignments
     for (roll, sub, sid), v in enroll_vars.items():
@@ -920,108 +1090,229 @@ def _solve_single_pass(
                 f"across {gap_stats['improved_students']} student(s) without violating preferences."
             )
 
-    # Check for blocked slot assignments (fail-safe diagnostic warnings)
-    if res.status in ("OPTIMAL", "FEASIBLE") and res.student_section_assignments:
+    # Score the assignment actually being delivered (after gap reduction).
+    # This is computed from the assignment itself - never read back from a
+    # solver whose objective may not have been the one that produced it.
+    if not inp.feasibility_only and res.status in ("OPTIMAL", "FEASIBLE"):
+        total_penalty = 0
         blocked_violations: List[Tuple[str, str, str]] = []
+        section_load: Dict[int, int] = defaultdict(int)
         for roll, sub_assignments in res.student_section_assignments.items():
-            sub_prefs = inp.time_preferences.get(roll, {})
-            blocked_slots = {
-                sk for sk, rating in sub_prefs.items()
-                if rating == PreferenceRating.BLOCKED.value
-            }
-            if not blocked_slots:
-                continue
+            time_pref = inp.time_preferences.get(roll, {})
+            fac_pref = inp.faculty_preferences.get(roll, {})
             for sub, sid in sub_assignments.items():
+                section_load[sid] += 1
                 for m in assigned_meetings.get(sid, []):
-                    if m.slot_key in blocked_slots:
+                    rating = time_pref.get(m.slot_key)
+                    if rating == blocked_value:
                         blocked_violations.append((roll, sub, m.slot_key))
+                        total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY[blocked_value]
+                    elif rating is not None:
+                        total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
+                teacher_id = assigned_teachers.get(sid)
+                if teacher_id:
+                    f_rating = fac_pref.get(sub, {}).get(teacher_id)
+                    if f_rating is not None and f_rating != _DEFAULT_FACULTY_PENALTY:
+                        total_penalty += _FACULTY_WEIGHT * _FACULTY_PREF_PENALTY.get(f_rating, _DEFAULT_FACULTY_PENALTY)
+        for sc, sids in subject_sections.items():
+            tot = len(inp.subject_students.get(sc, []))
+            if len(sids) >= 2 and tot > 0:
+                ideal = tot // len(sids)
+                total_penalty += sum(2 * abs(section_load.get(sid, 0) - ideal) for sid in sids)
+
+        res.objective_value = total_penalty
+        res.blocked_placements = len(blocked_violations)
 
         if blocked_violations:
+            examples = ", ".join(f"{roll} ({sub} @ {sk})" for roll, sub, sk in blocked_violations[:5])
+            more = f" and {len(blocked_violations) - 5} more" if len(blocked_violations) > 5 else ""
+            if res.blocked_minimum_proven:
+                verdict = (
+                    "This is the proven minimum for this master timetable: no assignment can place fewer "
+                    "students in blocked slots. Only a different master timetable (try more candidates) can lower it."
+                )
+            else:
+                verdict = (
+                    "This is the best found but NOT proven minimal; a longer Solver Time Limit may reduce it."
+                )
             res.warnings.append(
-                f"Blocked slot exception: {len(blocked_violations)} assignment(s) placed students in blocked slots due to lack of alternative sections: "
-                + ", ".join([f"{roll} ({sub} @ {sk})" for roll, sub, sk in blocked_violations[:5]])
-                + (f" and {len(blocked_violations) - 5} more." if len(blocked_violations) > 5 else ".")
+                f"Blocked slots: {len(blocked_violations)} placement(s) fall in a slot the student blocked. "
+                f"{verdict} Examples: {examples}{more}."
             )
 
     return res
 
 
+
+def _solve_single_pass_impl(
+    inp: SolverInput,
+    seed: int = 42,
+    time_limit: Optional[float] = None,
+) -> SolverResult:
+    t0 = time.monotonic()
+    limit = float(time_limit) if time_limit is not None else float(inp.time_limit_seconds)
+
+    s1, failure = _stage1(inp, seed, solve_seconds=min(limit * 0.7, 45.0))
+    if failure is not None:
+        return failure
+
+    # If no students enrolled in the input, Stage 1 is the complete answer
+    if not any(bool(studs) for studs in inp.subject_students.values()):
+        return SolverResult(
+            status=s1.status,
+            section_slot_assignments=s1.slot_keys,
+            section_meetings=s1.meetings,
+            section_teacher_assignments=s1.teachers,
+            wall_time_seconds=round(time.monotonic() - t0, 3),
+            num_conflicts=s1.num_conflicts,
+            stage1_status=s1.status,
+        )
+
+    res = _stage2(inp, seed, s1, budget=max(1.0, limit - s1.elapsed))
+    res.wall_time_seconds = round(time.monotonic() - t0, 3)
+    return res
+
+
+
+def _candidate_summary(candidate_id: int, seed: int, res: SolverResult, is_best: bool) -> Dict:
+    return {
+        "candidate_id": candidate_id,
+        "seed": seed,
+        "status": res.status,
+        "stage1_status": res.stage1_status,
+        "stage2_status": res.stage2_status,
+        # Only a fully optimised result has a meaningful penalty; candidates
+        # that were merely scored (or failed) report None, never a fake 0.
+        "objective_value": res.objective_value if res.status in ("OPTIMAL", "FEASIBLE") else None,
+        "blocked_placements": res.blocked_placements,
+        "blocked_minimum_proven": res.blocked_minimum_proven,
+        "wall_time_seconds": res.wall_time_seconds,
+        "num_conflicts": res.num_conflicts,
+        "is_best": is_best,
+    }
+
+
 def solve(inp: SolverInput) -> SolverResult:
     """Entrypoint for CP-SAT timetable generation.
 
-    If candidate_count > 1, executes a multi-start portfolio search across
-    distinct master timetables and selects the one with minimum student penalty.
+    If candidate_count > 1, builds several master timetables, scores each by
+    its minimum blocked-slot placements, and fully optimises only the best
+    (see _solve_portfolio).
     """
     if inp.candidate_count <= 1 or inp.feasibility_only:
         res = _solve_single_pass(inp, seed=inp.random_seed, time_limit=inp.time_limit_seconds)
-        res.candidates = [
-            {
-                "candidate_id": 1,
-                "seed": inp.random_seed,
-                "status": res.status,
-                "objective_value": res.objective_value,
-                "wall_time_seconds": res.wall_time_seconds,
-                "num_conflicts": res.num_conflicts,
-                "is_best": True,
-            }
-        ]
+        res.candidates = [_candidate_summary(1, inp.random_seed, res, is_best=True)]
         return res
 
-    num_candidates = min(10, max(2, int(inp.candidate_count)))
-    time_per_cand = max(5.0, inp.time_limit_seconds / num_candidates)
-    seeds = [42, 101, 202, 303, 404, 505, 606, 707, 808, 909][:num_candidates]
+    return _solve_portfolio(inp)
 
-    candidate_results: List[SolverResult] = []
-    candidate_summaries: List[Dict] = []
-    was_cancelled = False
 
-    for idx, s in enumerate(seeds):
-        if inp.cancel_check and inp.cancel_check():
-            was_cancelled = True
+def _solve_portfolio(inp: SolverInput) -> SolverResult:
+    """Multi-candidate search that does NOT split the full solve N ways.
+
+    Phase 1 (about 60% of the budget): for each candidate seed, build a master
+    timetable (Stage 1) and score it cheaply with Stage 2's Pass A - the minimum
+    number of students it forces into a slot they blocked.
+    Phase 2 (everything that is left): run the complete Stage 2 (Pass A + B)
+    on the single best-scoring master timetable only.
+    """
+    t_start = time.monotonic()
+    total = float(inp.time_limit_seconds)
+    n = min(10, max(2, int(inp.candidate_count)))
+    seeds = [42, 101, 202, 303, 404, 505, 606, 707, 808, 909][:n]
+    cancelled = lambda: bool(inp.cancel_check and inp.cancel_check())  # noqa: E731
+
+    # No students => nothing to score; a single Stage 1 is the whole answer.
+    if not any(bool(studs) for studs in inp.subject_students.values()):
+        res = _solve_single_pass(inp, seed=seeds[0], time_limit=total)
+        res.candidates = [_candidate_summary(1, seeds[0], res, is_best=True)]
+        return res
+
+    per_candidate = (total * 0.6) / n
+    stage1_seconds = max(5.0, min(45.0, per_candidate * 0.65))
+    score_seconds = max(5.0, per_candidate * 0.35)
+
+    built: List[Tuple[int, int, _Stage1, SolverResult]] = []  # (candidate_id, seed, stage1, score)
+    summaries: List[Dict] = []
+    notes: List[str] = []
+
+    for idx, seed in enumerate(seeds):
+        if cancelled():
             break
-        cand_res = _solve_single_pass(inp, seed=s, time_limit=time_per_cand)
-        candidate_results.append(cand_res)
-        candidate_summaries.append({
-            "candidate_id": idx + 1,
-            "seed": s,
-            "status": cand_res.status,
-            "objective_value": cand_res.objective_value,
-            "wall_time_seconds": cand_res.wall_time_seconds,
-            "num_conflicts": cand_res.num_conflicts,
-            "is_best": False,
-        })
+        cand_t0 = time.monotonic()
+        s1, failure = _stage1(inp, seed, solve_seconds=stage1_seconds)
+        if cancelled():
+            break
+        if failure is not None:
+            failure.wall_time_seconds = round(time.monotonic() - cand_t0, 3)
+            summaries.append(_candidate_summary(idx + 1, seed, failure, is_best=False))
+            continue
 
-    if not candidate_results:
+        score = _stage2(inp, seed, s1, budget=score_seconds, score_only=True)
+        if cancelled():
+            break
+        score.wall_time_seconds = round(time.monotonic() - cand_t0, 3)
+        summaries.append(_candidate_summary(idx + 1, seed, score, is_best=False))
+        if score.status == "SCORED":
+            built.append((idx + 1, seed, s1, score))
+            if score.blocked_placements == 0 and score.blocked_minimum_proven:
+                notes.append(
+                    f"Candidate #{idx + 1} places nobody in a blocked slot (proven), so no further candidates "
+                    "were built; the saved time went to optimising it."
+                )
+                break
+
+    if cancelled():
         return SolverResult(
             status="UNKNOWN",
-            warnings=["Solve cancelled by user before any candidate completed."],
-            candidates=candidate_summaries,
+            wall_time_seconds=round(time.monotonic() - t_start, 3),
+            warnings=["Solve cancelled by user; no timetable was published."],
+            candidates=summaries,
         )
 
-    valid_candidates = [
-        (i, r) for i, r in enumerate(candidate_results)
-        if r.status in ("OPTIMAL", "FEASIBLE")
-    ]
-    if valid_candidates:
-        best_idx, best_res = min(valid_candidates, key=lambda x: x[1].objective_value)
-        candidate_summaries[best_idx]["is_best"] = True
-        best_res.candidates = candidate_summaries
-        total_time = sum(c["wall_time_seconds"] for c in candidate_summaries)
-        best_res.wall_time_seconds = round(total_time, 3)
-        msg = f"Multi-candidate evaluation: tested {len(candidate_results)} master timetables; selected Candidate #{best_idx + 1} with lowest penalty ({best_res.objective_value})."
-        if was_cancelled:
-            msg += " (Search stopped early due to user cancellation)."
-        best_res.warnings.append(msg)
-        return best_res
-    else:
-        # None of the candidates found a feasible solution within their time slice
-        fallback_res = candidate_results[0]
-        fallback_res.candidates = candidate_summaries
-        total_time = sum(c["wall_time_seconds"] for c in candidate_summaries)
-        fallback_res.wall_time_seconds = round(total_time, 3)
-        fallback_res.warnings.append(
-            f"All {len(candidate_results)} candidates timed out before finding a feasible timetable. "
-            f"The time budget per candidate ({time_per_cand:.1f}s) was too short for this department size ({len(inp.sections)} sections). "
-            f"Please run with 1 Candidate or increase the Solver Time Limit (e.g. 180s for 3 candidates, 300s for 5 candidates)."
+    if not built:
+        return SolverResult(
+            status="UNKNOWN",
+            wall_time_seconds=round(time.monotonic() - t_start, 3),
+            warnings=[
+                f"None of the {len(summaries)} candidate master timetables could be built and scored in "
+                f"{per_candidate:.0f}s each (Stage 1 {stage1_seconds:.0f}s + scoring {score_seconds:.0f}s). "
+                f"The department is large ({len(inp.sections)} sections): increase the Solver Time Limit "
+                "or use fewer candidates."
+            ],
+            candidates=summaries,
+            stage1_status=summaries[0]["stage1_status"] if summaries else "",
         )
-        return fallback_res
+
+    best_id, best_seed, best_s1, best_score = min(
+        built, key=lambda b: (b[3].blocked_placements, b[0])
+    )
+    remaining = max(5.0, total - (time.monotonic() - t_start))
+    final_t0 = time.monotonic()
+    final = _stage2(inp, best_seed, best_s1, budget=remaining)
+    final_seconds = time.monotonic() - final_t0
+    if cancelled():
+        return SolverResult(
+            status="UNKNOWN",
+            wall_time_seconds=round(time.monotonic() - t_start, 3),
+            warnings=["Solve cancelled by user; no timetable was published."],
+            candidates=summaries,
+        )
+    final.wall_time_seconds = round(time.monotonic() - t_start, 3)
+
+    for row in summaries:
+        if row["candidate_id"] == best_id:
+            build_and_score_seconds = row["wall_time_seconds"]
+            row.update(_candidate_summary(best_id, best_seed, final, is_best=True))
+            # This candidate's own time: building + scoring + its full optimisation.
+            row["wall_time_seconds"] = round(build_and_score_seconds + final_seconds, 3)
+    final.candidates = summaries
+
+    minima = ", ".join(f"#{cid}: {sc.blocked_placements}" for cid, _s, _t, sc in built)
+    final.warnings.append(
+        f"Multi-candidate search: built and scored {len(built)} master timetable(s) on blocked-slot placements "
+        f"(minimum found per candidate - {minima}); selected Candidate #{best_id} and spent the remaining "
+        f"{remaining:.0f}s fully optimising it. Other candidates were scored only, not fully optimised."
+    )
+    final.warnings.extend(notes)
+    return final
