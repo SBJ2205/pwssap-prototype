@@ -17,6 +17,7 @@ import AdminSubjects from "./pages/admin/AdminSubjects";
 import AdminStudents from "./pages/admin/AdminStudents";
 import AdminTeachers from "./pages/admin/AdminTeachers";
 import AdminAvailability from "./pages/admin/AdminAvailability";
+import AdminCohorts from "./pages/admin/AdminCohorts";
 import AdminSolver from "./pages/admin/AdminSolver";
 import AdminTimetable from "./pages/admin/AdminTimetable";
 import AdminOverrides from "./pages/admin/AdminOverrides";
@@ -37,6 +38,7 @@ const PAGE_COMPONENTS = {
   "admin-students":     AdminStudents,
   "admin-teachers":     AdminTeachers,
   "admin-availability": AdminAvailability,
+  "admin-cohorts":      AdminCohorts,
   "admin-solver":       AdminSolver,
   "admin-timetable":    AdminTimetable,
   "admin-overrides":    AdminOverrides,
