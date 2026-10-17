@@ -157,35 +157,78 @@ def seed_student_preferences(store):
         # Sem 4 has ~14 subjects -> (19 - 14)//4 = 1 max block
         max_blocks = 2 if sem == 6 else 1
 
-        # Archetype distribution:
-        # 30% Night Owls (hate mornings, prefer afternoons)
-        # 30% Early Birds (prefer mornings, hate late afternoons)
-        # 40% Balanced / Friday Blockers
-        archetype = i % 10
+        # Partition slots by attributes:
+        slot_1 = [k for k in ratable_keys if k.endswith("-1")]
+        slot_2 = [k for k in ratable_keys if k.endswith("-2")]
+        slot_3 = [k for k in ratable_keys if k.endswith("-3")]
+        slot_4 = [k for k in ratable_keys if k.endswith("-4")]
+        friday = [k for k in ratable_keys if k.startswith("Fri-")]
+        monday = [k for k in ratable_keys if k.startswith("Mon-")]
+
         ratings: Dict[str, int] = {}
         blocked_chosen: List[str] = []
+        arche = i % 4
 
-        if archetype in (0, 1, 2):
-            # Night owl: dislike early mornings, prefer afternoons
-            for k in morning_slots[:2]:
+        if arche == 0:  # Night Owl (hates 9 AM, loves mid-day & afternoon)
+            blocked_pool = slot_1 + monday
+            blocked_chosen = rng.sample(blocked_pool, min(max_blocks, len(blocked_pool)))
+            for k in slot_1:
+                if k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.DISLIKED.value
+            for k in friday[-1:]:
                 ratings[k] = PreferenceRating.DISLIKED.value
-            for k in afternoon_slots[:3]:
+            mid_day = slot_2 + slot_3
+            for k in rng.sample(mid_day, min(6, len(mid_day))):
                 ratings[k] = PreferenceRating.PREFERRED.value
-            blocked_chosen = rng.sample(morning_slots, min(max_blocks, len(morning_slots)))
-        elif archetype in (3, 4, 5):
-            # Early bird: prefer mornings, dislike late afternoon
-            for k in morning_slots[:3]:
+            for k in ratable_keys:
+                if k not in ratings and k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.TOLERABLE.value if rng.random() < 0.75 else PreferenceRating.DISLIKED.value
+
+        elif arche == 1:  # Early Bird (loves morning & mid-day, hates late afternoon)
+            blocked_pool = slot_4 + slot_3
+            blocked_chosen = rng.sample(blocked_pool, min(max_blocks, len(blocked_pool)))
+            for k in slot_4:
+                if k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.DISLIKED.value
+            for k in slot_3[-2:]:
+                if k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.DISLIKED.value
+            mornings = slot_1 + slot_2
+            for k in rng.sample(mornings, min(6, len(mornings))):
                 ratings[k] = PreferenceRating.PREFERRED.value
-            for k in afternoon_slots[-2:]:
-                ratings[k] = PreferenceRating.DISLIKED.value
-            blocked_chosen = rng.sample(afternoon_slots, min(max_blocks, len(afternoon_slots)))
-        else:
-            # Balanced: likes some, dislikes Friday afternoon, blocks Friday
-            for k in friday_slots[-2:]:
-                ratings[k] = PreferenceRating.DISLIKED.value
-            ratings[rng.choice(morning_slots)] = PreferenceRating.PREFERRED.value
-            ratings[rng.choice(afternoon_slots)] = PreferenceRating.TOLERABLE.value
-            blocked_chosen = rng.sample(friday_slots, min(max_blocks, len(friday_slots)))
+            for k in ratable_keys:
+                if k not in ratings and k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.TOLERABLE.value if rng.random() < 0.70 else PreferenceRating.DISLIKED.value
+
+        elif arche == 2:  # Long Weekend Seeker (protects Friday & Monday)
+            blocked_pool = friday + monday[:1]
+            blocked_chosen = rng.sample(blocked_pool, min(max_blocks, len(blocked_pool)))
+            for k in friday:
+                if k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.DISLIKED.value
+            for k in monday[:1]:
+                if k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.DISLIKED.value
+            core_mid = [k for k in (slot_2 + slot_3) if not k.startswith("Fri-")]
+            for k in rng.sample(core_mid, min(6, len(core_mid))):
+                ratings[k] = PreferenceRating.PREFERRED.value
+            for k in ratable_keys:
+                if k not in ratings and k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.TOLERABLE.value if rng.random() < 0.65 else PreferenceRating.DISLIKED.value
+
+        else:  # Mid-Day / Anti-Extreme (hates 9 AM and late 15:45, loves 11:15 & 13:45)
+            extremes = slot_1 + slot_4
+            blocked_chosen = rng.sample(extremes, min(max_blocks, len(extremes)))
+            for k in extremes:
+                if k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.DISLIKED.value
+            for k in slot_2:
+                ratings[k] = PreferenceRating.PREFERRED.value
+            for k in slot_3[:2]:
+                ratings[k] = PreferenceRating.PREFERRED.value
+            for k in ratable_keys:
+                if k not in ratings and k not in blocked_chosen:
+                    ratings[k] = PreferenceRating.TOLERABLE.value
 
         # Apply block tokens
         for b_slot in blocked_chosen:
@@ -205,12 +248,11 @@ def seed_student_preferences(store):
         for sub in enrolled_subs:
             capable_tids = store.teachers_for_subject(sub.subject_code)
             if len(capable_tids) >= 2:
-                # Rank: one preferred, one tolerable/disliked
                 shuffled = list(capable_tids)
                 rng.shuffle(shuffled)
                 t_ratings = {shuffled[0]: PreferenceRating.PREFERRED.value}
-                if len(shuffled) > 1:
-                    t_ratings[shuffled[1]] = rng.choice([PreferenceRating.TOLERABLE.value, PreferenceRating.DISLIKED.value])
+                for other_tid in shuffled[1:]:
+                    t_ratings[other_tid] = PreferenceRating.DISLIKED.value if rng.random() < 0.75 else PreferenceRating.TOLERABLE.value
                 fac_prefs[sub.subject_code] = t_ratings
         if fac_prefs:
             store.set_faculty_preferences(roll, fac_prefs)

@@ -60,31 +60,88 @@ def upload(client: httpx.Client, path: str, csv_name: str, extra: dict | None = 
 
 
 def build_preferences(rng, idx, slot_keys, max_blocks):
-    morning = [k for k in slot_keys if k.endswith(("-1", "-2"))]
-    afternoon = [k for k in slot_keys if k.endswith(("-3", "-4"))]
+    """Build a realistic, heavily opinionated preference map across all slots.
+
+    Real students actively express opinions on almost every slot:
+    - 4 to 6 slots PREFERRED (1)
+    - 4 to 6 slots TOLERABLE (2)
+    - 4 to 6 slots DISLIKED (3)
+    - max_blocks slots BLOCKED (4)
+    """
+    slot_1 = [k for k in slot_keys if k.endswith("-1")]
+    slot_2 = [k for k in slot_keys if k.endswith("-2")]
+    slot_3 = [k for k in slot_keys if k.endswith("-3")]
+    slot_4 = [k for k in slot_keys if k.endswith("-4")]
     friday = [k for k in slot_keys if k.startswith("Fri-")]
+    monday = [k for k in slot_keys if k.startswith("Mon-")]
+
     ratings: dict[str, int] = {}
-    arche = idx % 10
-    if arche <= 2:  # night owl
-        for k in morning[:2]:
+    arche = idx % 4
+
+    if arche == 0:  # Night Owl (hates 9 AM, loves mid-day & afternoon)
+        blocked_pool = slot_1 + monday
+        blocked = rng.sample(blocked_pool, min(max_blocks, len(blocked_pool)))
+        for k in slot_1:
+            if k not in blocked:
+                ratings[k] = DISLIKED
+        for k in friday[-1:]:
             ratings[k] = DISLIKED
-        for k in afternoon[:3]:
+        mid_day = slot_2 + slot_3
+        for k in rng.sample(mid_day, min(6, len(mid_day))):
             ratings[k] = PREFERRED
-        blocked = rng.sample(morning, min(max_blocks, len(morning)))
-    elif arche <= 5:  # early bird
-        for k in morning[:3]:
+        for k in slot_keys:
+            if k not in ratings and k not in blocked:
+                ratings[k] = TOLERABLE if rng.random() < 0.75 else DISLIKED
+
+    elif arche == 1:  # Early Bird (loves morning & mid-day, hates late afternoon)
+        blocked_pool = slot_4 + slot_3
+        blocked = rng.sample(blocked_pool, min(max_blocks, len(blocked_pool)))
+        for k in slot_4:
+            if k not in blocked:
+                ratings[k] = DISLIKED
+        for k in slot_3[-2:]:
+            if k not in blocked:
+                ratings[k] = DISLIKED
+        mornings = slot_1 + slot_2
+        for k in rng.sample(mornings, min(6, len(mornings))):
             ratings[k] = PREFERRED
-        for k in afternoon[-2:]:
-            ratings[k] = DISLIKED
-        blocked = rng.sample(afternoon, min(max_blocks, len(afternoon)))
-    else:  # balanced / friday blocker
-        for k in friday[-2:]:
-            ratings[k] = DISLIKED
-        ratings[rng.choice(morning)] = PREFERRED
-        ratings[rng.choice(afternoon)] = TOLERABLE
-        blocked = rng.sample(friday, min(max_blocks, len(friday)))
+        for k in slot_keys:
+            if k not in ratings and k not in blocked:
+                ratings[k] = TOLERABLE if rng.random() < 0.70 else DISLIKED
+
+    elif arche == 2:  # Long Weekend Seeker (protects Friday & Monday)
+        blocked_pool = friday + monday[:1]
+        blocked = rng.sample(blocked_pool, min(max_blocks, len(blocked_pool)))
+        for k in friday:
+            if k not in blocked:
+                ratings[k] = DISLIKED
+        for k in monday[:1]:
+            if k not in blocked:
+                ratings[k] = DISLIKED
+        core_mid = [k for k in (slot_2 + slot_3) if not k.startswith("Fri-")]
+        for k in rng.sample(core_mid, min(6, len(core_mid))):
+            ratings[k] = PREFERRED
+        for k in slot_keys:
+            if k not in ratings and k not in blocked:
+                ratings[k] = TOLERABLE if rng.random() < 0.65 else DISLIKED
+
+    else:  # Mid-Day / Anti-Extreme (hates 9 AM and late 15:45, loves 11:15 & 13:45)
+        extremes = slot_1 + slot_4
+        blocked = rng.sample(extremes, min(max_blocks, len(extremes)))
+        for k in extremes:
+            if k not in blocked:
+                ratings[k] = DISLIKED
+        for k in slot_2:
+            ratings[k] = PREFERRED
+        for k in slot_3[:2]:
+            ratings[k] = PREFERRED
+        for k in slot_keys:
+            if k not in ratings and k not in blocked:
+                ratings[k] = TOLERABLE
+
     for k in blocked:
         ratings[k] = BLOCKED
+
     return ratings
 
 
@@ -117,10 +174,11 @@ def seed_student(client, student, idx, seed, ratable_keys):
             if len(tids) < 2:
                 continue
             rng.shuffle(tids)
-            prefs[item["subject_code"]] = {
-                tids[0]: PREFERRED,
-                tids[1]: rng.choice([TOLERABLE, DISLIKED]),
-            }
+            # The 1 teacher they like gets PREFERRED; all other teachers get DISLIKED (or occasional TOLERABLE)
+            sub_ratings = {tids[0]: PREFERRED}
+            for other_tid in tids[1:]:
+                sub_ratings[other_tid] = DISLIKED if rng.random() < 0.75 else TOLERABLE
+            prefs[item["subject_code"]] = sub_ratings
     if prefs:
         r = client.put(f"/students/{roll}/faculty-preferences", json={"preferences": prefs})
         if r.status_code != 200:
