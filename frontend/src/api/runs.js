@@ -49,6 +49,10 @@ export const runSolve = (runId, timeLimit, candidates, signal) => {
 export const getSolveResult = (runId) =>
   client.get(`/admin/runs/${runId}/solve-result`).then(r => r.data);
 
+// GET /admin/runs/solve/status → {active: bool, run_id?, kind?, elapsed_seconds?}
+export const getSolveStatus = () =>
+  client.get("/admin/runs/solve/status").then(r => r.data);
+
 export const cancelSolve = (runId) =>
   client.post(`/admin/runs/${runId}/cancel`).then(r => r.data);
 

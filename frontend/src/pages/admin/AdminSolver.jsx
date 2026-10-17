@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { checkFeasibility, generateSections, runSolve, getSections, getSolveResult, cancelSolve } from "../../api/runs";
+import { checkFeasibility, generateSections, runSolve, getSections, getSolveResult, cancelSolve, getSolveStatus } from "../../api/runs";
 import { getSubjects, getStudents, getTeachers } from "../../api/catalog";
 import { initializeCycle } from "../../api/cycle";
 import { apiErrorMessage } from "../../api/client";
@@ -56,6 +56,38 @@ export default function AdminSolver({
   const [feasibilityResult, setFeasibilityResult] = useState(null);
 
   const abortControllerRef = useRef(null);
+
+  // A solve started elsewhere (another tab, or before this page was reloaded).
+  // The backend allows only one at a time, so reattach to it instead of racing it.
+  const [remoteSolve, setRemoteSolve] = useState(null);
+  const wasRemoteActiveRef = useRef(false);
+  const remoteActive = !!remoteSolve?.active && !solving && !checkingFeasibility;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const st = await getSolveStatus();
+        if (cancelled) return;
+        setRemoteSolve(st);
+        if (wasRemoteActiveRef.current && !st.active) {
+          // It just finished: pull in its result.
+          const rid = st.run_id ?? currentRunId;
+          if (rid != null) {
+            getSolveResult(Number(rid)).then(res => { if (!cancelled && res) setSolveResult(res); }).catch(() => {});
+          }
+          if (refreshCycle) refreshCycle();
+        }
+        wasRemoteActiveRef.current = !!st.active;
+      } catch {
+        /* backend briefly unreachable: keep last state */
+      }
+    }
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRunId]);
 
   // Restore cached solve results when switching runs or returning from another page
   useEffect(() => {
@@ -456,7 +488,7 @@ export default function AdminSolver({
                 fontWeight: 600,
               }}
             />
-            <span style={{ fontSize: 12, color: "#888" }}>seconds (up to 3600s / 1 hr)</span>
+            <span style={{ fontSize: 12, color: "#888" }}>seconds TOTAL, shared by all candidates (up to 3600s / 1 hr)</span>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               {[
                 { label: "30s", val: 30 },
@@ -547,8 +579,8 @@ export default function AdminSolver({
           </div>
           <span style={{ fontSize: 11, color: "#888" }}>
             {candidateCount === 1
-              ? "Recommended time: 30s–60s"
-              : `Recommended time: ~${Math.max(60, candidateCount * 30)}s+ (~${Math.round(timeLimit / candidateCount)}s per candidate)`}
+              ? "Recommended for the full department: 180s+ (about 70% goes to the master timetable; the rest minimises blocked slots)"
+              : `Recommended: ${Math.max(240, candidateCount * 80)}s+. About 60% of the time builds and scores ${candidateCount} candidate timetables (~${Math.round((timeLimit * 0.6) / candidateCount)}s each); the best one then gets the remaining ~${Math.round(timeLimit * 0.4)}s+`}
           </span>
         </div>
 
@@ -557,16 +589,16 @@ export default function AdminSolver({
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
             <button
               onClick={handleCheckFeasibility}
-              disabled={checkingFeasibility || solving || !isReady || sectionsCount === 0}
+              disabled={checkingFeasibility || solving || remoteActive || !isReady || sectionsCount === 0}
               style={{
                 padding: "10px 20px",
-                background: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "#aaa" : "#185FA5",
+                background: checkingFeasibility || solving || remoteActive || !isReady || sectionsCount === 0 ? "#aaa" : "#185FA5",
                 color: "#fff",
                 border: "none",
                 borderRadius: 8,
                 fontSize: 13,
                 fontWeight: 700,
-                cursor: checkingFeasibility || solving || !isReady || sectionsCount === 0 ? "not-allowed" : "pointer",
+                cursor: checkingFeasibility || solving || remoteActive || !isReady || sectionsCount === 0 ? "not-allowed" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 6,
@@ -577,16 +609,16 @@ export default function AdminSolver({
             </button>
             <button
               onClick={handleRunSolver}
-              disabled={solving || !isReady}
+              disabled={solving || remoteActive || !isReady}
               style={{
                 padding: "10px 28px",
-                background: solving || !isReady ? "#aaa" : "#1D9E75",
+                background: solving || remoteActive || !isReady ? "#aaa" : "#1D9E75",
                 color: "#fff",
                 border: "none",
                 borderRadius: 8,
                 fontSize: 14,
                 fontWeight: 700,
-                cursor: solving || !isReady ? "not-allowed" : "pointer",
+                cursor: solving || remoteActive || !isReady ? "not-allowed" : "pointer",
                 boxShadow: "0 2px 6px rgba(29, 158, 117, 0.25)",
                 display: "inline-flex",
                 alignItems: "center",
@@ -603,6 +635,22 @@ export default function AdminSolver({
             </div>
           )}
         </div>
+
+        {remoteActive && (
+          <div style={{ background: "#F0F7FD", border: "1px solid #C2DCF2", borderRadius: 8, padding: "12px 14px", fontSize: 12, color: "#0C447C", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span>
+              ⏳ A <strong>{remoteSolve.kind}</strong> is already running for Run #{remoteSolve.run_id} ({Math.round(remoteSolve.elapsed_seconds)}s elapsed).
+              Its result will appear here when it finishes.
+            </span>
+            <button
+              type="button"
+              onClick={() => cancelSolve(Number(remoteSolve.run_id)).catch(() => {})}
+              style={{ background: "#FCEBEB", color: "#A51D24", border: "1px solid #F7C1C1", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+            >
+              ⏹ Stop it
+            </button>
+          </div>
+        )}
 
         {feasibilityResult && (
           <div style={{ background: feasibilityResult.feasible ? "#F7FAF4" : "#FCEBEB", border: `1px solid ${feasibilityResult.feasible ? "#C0DD97" : "#F7C1C1"}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, marginBottom: 14, color: feasibilityResult.feasible ? "#27500A" : "#791F1F" }}>
@@ -685,7 +733,10 @@ export default function AdminSolver({
                 ⏳ <strong>Est. Remaining:</strong> ~{Math.max(0, timeLimit - elapsedSeconds)}s
               </span>
               <span>
-                📊 <strong>Budget:</strong> ~{(timeLimit / candidateCount).toFixed(1)}s per candidate
+                📊 <strong>Budget:</strong>{" "}
+                {candidateCount > 1
+                  ? `Phase 1: build & score ${candidateCount} candidates (~${Math.round(timeLimit * 0.6)}s) → Phase 2: optimise the best (rest)`
+                  : "single candidate, ~70% master timetable → rest student sectioning"}
               </span>
             </div>
           </div>
@@ -723,6 +774,13 @@ export default function AdminSolver({
                       ? " (Results are now live)."
                       : " (No timetable was published)."}
                   </div>
+                  {solveResult.stage1_status && (
+                    <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                      Master timetable: <strong>{solveResult.stage1_status}</strong>
+                      {" · "}Student sectioning: <strong>{solveResult.stage2_status || "n/a"}</strong>
+                      {" · "}OPTIMAL only when both are proven optimal
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -747,7 +805,8 @@ export default function AdminSolver({
 
             <MetricsRow
               items={[
-                { val: solveResult.objective_value ?? 0, label: "Objective Penalty", tip: "Total weighted penalty across time-slot, faculty preferences, and load balancing." },
+                { val: solveResult.objective_value ?? 0, label: "Objective Penalty", tip: "Total weighted penalty of the delivered assignment (blocked slots 2000 each, plus time-slot, faculty and section-balance terms)." },
+                { val: solveResult.blocked_placements ?? "—", label: solveResult.blocked_minimum_proven ? "Blocked Placements (proven min)" : "Blocked Placements", tip: "Students placed in a slot they blocked. 'Proven min' means no assignment of this master timetable can do better." },
                 { val: `${solveResult.wall_time_seconds?.toFixed(2) || "0"}s`, label: "Solve Duration", tip: "Total execution time taken by the CP-SAT engine." },
                 { val: solveResult.num_conflicts ?? 0, label: "Solver Conflicts", tip: "Internal search conflicts explored before reaching optimality." },
                 { val: solveResult.sections?.length || 0, label: "Assigned Sections", tip: "Total class sections scheduled." },
@@ -760,7 +819,7 @@ export default function AdminSolver({
                 <div style={{ fontWeight: 700, fontSize: 13, color: "#1e293b", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                   <span>🏆 Multi-Candidate Master Timetable Leaderboard</span>
                   <span style={{ fontSize: 11, fontWeight: 500, color: "#64748b" }}>
-                    (Evaluated {solveResult.candidates.length} distinct structural layouts; lowest penalty auto-published)
+                    (Each layout is built and scored on blocked slots only; the one with the fewest is fully optimised and auto-published)
                   </span>
                 </div>
                 <div style={{ overflowX: "auto" }}>
@@ -770,6 +829,7 @@ export default function AdminSolver({
                         <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Candidate</th>
                         <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Random Seed</th>
                         <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Status</th>
+                        <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Blocked</th>
                         <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Objective Penalty</th>
                         <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Solve Time</th>
                         <th style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>Outcome</th>
@@ -792,8 +852,8 @@ export default function AdminSolver({
                           </td>
                           <td style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>
                             <span style={{
-                              color: c.status === "OPTIMAL" ? "#166534" : "#854d0e",
-                              background: c.status === "OPTIMAL" ? "#dcfce7" : "#fef9c3",
+                              color: c.status === "OPTIMAL" ? "#166534" : (c.status === "INFEASIBLE" || c.status === "UNKNOWN") ? "#991b1b" : "#854d0e",
+                              background: c.status === "OPTIMAL" ? "#dcfce7" : (c.status === "INFEASIBLE" || c.status === "UNKNOWN") ? "#fee2e2" : "#fef9c3",
                               padding: "2px 6px",
                               borderRadius: 4,
                               fontSize: 11,
@@ -803,8 +863,15 @@ export default function AdminSolver({
                             </span>
                           </td>
                           <td style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>
+                            {c.blocked_placements == null
+                              ? "—"
+                              : c.status === "SCORED"
+                                ? <span title="Quick score from a short search: an upper bound, not the final figure">≤ {c.blocked_placements}</span>
+                                : `${c.blocked_placements}${c.blocked_minimum_proven ? " (proven min)" : ""}`}
+                          </td>
+                          <td style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0" }}>
                             <strong style={{ color: c.is_best ? "#15803d" : "#0f172a" }}>
-                              {c.objective_value}
+                              {c.status === "OPTIMAL" || c.status === "FEASIBLE" ? c.objective_value : "—"}
                             </strong>
                           </td>
                           <td style={{ padding: "6px 10px", borderBottom: "1px solid #e2e8f0", color: "#64748b" }}>
@@ -816,7 +883,11 @@ export default function AdminSolver({
                                 ★ Published (Best)
                               </span>
                             ) : c.status === "UNKNOWN" ? (
-                              <span style={{ color: "#b45309" }}>Timed out</span>
+                              <span style={{ color: "#b45309" }}>Timed out before a valid layout</span>
+                            ) : c.status === "INFEASIBLE" ? (
+                              <span style={{ color: "#b91c1c" }}>No valid student assignment</span>
+                            ) : c.status === "SCORED" ? (
+                              <span style={{ color: "#94a3b8" }}>Scored only (more blocked slots)</span>
                             ) : (
                               <span style={{ color: "#94a3b8" }}>Alternate layout</span>
                             )}
