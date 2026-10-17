@@ -12,6 +12,8 @@ misrepresent how the real app is populated. The only thing built eagerly
 is the canonical time-slot grid, which is a fixed structural constant,
 not demo data — see domain/timeslots.py.
 """
+import threading
+import time
 from typing import Dict, List, Optional, Tuple
 
 from domain.models import (
@@ -71,6 +73,10 @@ class InMemoryStore:
         self.latest_solve_results: Dict[int, Dict] = {}
         # Set of run_ids for which cancellation has been requested
         self.cancel_requested_runs: set = set()
+        # At most one solve (or feasibility check) may run at a time: the
+        # store is a single shared timetable and the solver is CPU-bound.
+        self._solve_lock = threading.Lock()
+        self._active_solve: Optional[Dict] = None
 
     # ── Time slots (fixed, structural) ─────────────────────────────────────
     def list_time_slots(self) -> List[TimeSlot]:
@@ -369,11 +375,41 @@ class InMemoryStore:
 
     def clear_sections_for_run(self, run_id: int) -> int:
         """Remove every section belonging to run_id.  Returns the count of
-        deleted sections, so the caller can log/report how many were cleared."""
+        deleted sections, so the caller can log/report how many were cleared.
+
+        Student assignments that pointed at a deleted section are removed too;
+        otherwise they would dangle (or, worse, silently attach to an
+        unrelated section that later reuses the same id)."""
         to_delete = [sid for sid, s in self.sections.items() if s.run_id == run_id]
         for sid in to_delete:
             del self.sections[sid]
+        if to_delete:
+            gone = set(to_delete)
+            for roll in list(self.student_section_assignments):
+                sub_map = self.student_section_assignments[roll]
+                for code in [c for c, sid in sub_map.items() if sid in gone]:
+                    del sub_map[code]
+                if not sub_map:
+                    del self.student_section_assignments[roll]
         return len(to_delete)
+
+    # ── Solve concurrency guard ────────────────────────────────────────────
+    def try_begin_solve(self, run_id: int, kind: str) -> bool:
+        """Claim the single solve slot. Returns False if one is already running."""
+        with self._solve_lock:
+            if self._active_solve is not None:
+                return False
+            self._active_solve = {"run_id": run_id, "kind": kind, "started_at": time.time()}
+            return True
+
+    def end_solve(self, run_id: int) -> None:
+        with self._solve_lock:
+            if self._active_solve and self._active_solve["run_id"] == run_id:
+                self._active_solve = None
+
+    def get_active_solve(self) -> Optional[Dict]:
+        with self._solve_lock:
+            return dict(self._active_solve) if self._active_solve else None
 
     def get_section(self, section_id: int) -> Optional[Section]:
         return self.sections.get(section_id)

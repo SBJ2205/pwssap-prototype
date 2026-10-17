@@ -15,6 +15,7 @@ bound; the solver returns FEASIBLE rather than OPTIMAL if it times out.
 
 Optional query param: ?time_limit=<seconds> (default 30, max 3600).
 """
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -46,6 +47,33 @@ def _section_to_dict(section: Section) -> dict:
     }
 
 
+def _claim_solve_slot(store: InMemoryStore, run_id: int, kind: str) -> None:
+    """Only one solve/feasibility check may run at a time (409 otherwise)."""
+    if not store.try_begin_solve(run_id, kind):
+        active = store.get_active_solve() or {}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A {active.get('kind', 'solve')} is already running for run #{active.get('run_id')}. "
+                "Wait for it to finish or stop it first."
+            ),
+        )
+
+
+@router.get("/solve/status")
+def get_solve_status(store: InMemoryStore = Depends(get_store)):
+    """Whether a solve is currently running (lets a reloaded UI reattach)."""
+    active = store.get_active_solve()
+    if active is None:
+        return {"active": False}
+    return {
+        "active": True,
+        "run_id": active["run_id"],
+        "kind": active["kind"],
+        "elapsed_seconds": round(time.time() - active["started_at"], 1),
+    }
+
+
 @router.post("/{run_id}/solve")
 def solve_run(
     run_id: int,
@@ -66,10 +94,10 @@ def solve_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    # Clear any previous cancellation requests for this run
-    store.cancel_requested_runs.discard(run_id)
-
+    _claim_solve_slot(store, run_id, "solve")
     try:
+        # Clear any previous cancellation requests for this run
+        store.cancel_requested_runs.discard(run_id)
         result = run_solver_for_run(
             run_id=run_id,
             store=store,
@@ -78,6 +106,9 @@ def solve_run(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        store.cancel_requested_runs.discard(run_id)
+        store.end_solve(run_id)
 
     sections = store.list_sections_for_run(run_id)
 
@@ -88,6 +119,10 @@ def solve_run(
         "objective_value": result.objective_value,
         "wall_time_seconds": result.wall_time_seconds,
         "num_conflicts": result.num_conflicts,
+        "stage1_status": result.stage1_status,
+        "stage2_status": result.stage2_status,
+        "blocked_placements": result.blocked_placements,
+        "blocked_minimum_proven": result.blocked_minimum_proven,
         "sections": [_section_to_dict(s) for s in sections],
         "student_section_assignments": result.student_section_assignments,
         "candidates": result.candidates,
@@ -129,7 +164,9 @@ def check_feasibility(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
+    _claim_solve_slot(store, run_id, "feasibility check")
     try:
+        store.cancel_requested_runs.discard(run_id)
         result = run_solver_for_run(
             run_id=run_id,
             store=store,
@@ -138,6 +175,9 @@ def check_feasibility(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        store.cancel_requested_runs.discard(run_id)
+        store.end_solve(run_id)
 
     return {
         "run_id": run_id,
