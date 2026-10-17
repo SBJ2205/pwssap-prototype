@@ -327,10 +327,162 @@ def get_student_sections(
     # Sort timetable by subject_code for stable ordering.
     timetable.sort(key=lambda e: e["subject_code"])
 
+    stats = _compute_student_stats(student, timetable, store)
+
     return {
         "roll_number": roll_number,
         "name": student.name,
         "semester": student.semester,
         "timetable": timetable,
+        "stats": stats,
+    }
+
+
+def _compute_student_stats(student, timetable: list, store: InMemoryStore) -> dict:
+    time_prefs = store.get_time_preferences(student.roll_number)
+    fac_prefs = store.get_faculty_preferences(student.roll_number)
+
+    preferred_cnt = 0
+    tolerable_cnt = 0
+    unrated_cnt = 0
+    disliked_cnt = 0
+    blocked_cnt = 0
+    total_meetings = 0
+    blocked_overrides = []
+
+    days_with_classes = set()
+    friday_afternoon_has_class = False
+    monday_morning_has_class = False
+
+    for entry in timetable:
+        sub_code = entry.get("subject_code")
+        sub_name = entry.get("subject_name") or sub_code
+        sec_id = entry.get("section_id")
+        section = store.get_section(sec_id) if sec_id else None
+        run_id = section.run_id if section else None
+        parallel_count = len([s for s in store.list_sections_for_run(run_id) if s.subject_code == sub_code]) if run_id else 1
+        is_single = parallel_count <= 1
+
+        for m in entry.get("meetings", []):
+            sk = m.get("slot_key")
+            if not sk:
+                continue
+            total_meetings += 1
+            rating = time_prefs.get(sk)
+            if rating == 1:
+                preferred_cnt += 1
+            elif rating == 2:
+                tolerable_cnt += 1
+            elif rating == 3:
+                disliked_cnt += 1
+            elif rating == 4:
+                blocked_cnt += 1
+                blocked_overrides.append({
+                    "subject_code": sub_code,
+                    "subject_name": sub_name,
+                    "slot_key": sk,
+                    "day": m.get("day"),
+                    "start_time": m.get("start_time"),
+                    "end_time": m.get("end_time"),
+                    "duration_hours": m.get("duration_hours", 2),
+                    "is_single_section": is_single,
+                    "parallel_sections_count": parallel_count,
+                    "reason": (
+                        "Single-section course: no alternative time slots exist for this offering."
+                        if is_single else
+                        "Parallel sections conflicted with your other required classes or reached section capacity."
+                    ),
+                })
+            else:
+                unrated_cnt += 1
+
+            day = m.get("day")
+            if day:
+                days_with_classes.add(day)
+                slot_idx = int(sk.split("-")[1]) if "-" in sk and sk.split("-")[1].isdigit() else 0
+                if day == "Fri" and slot_idx in (3, 4):
+                    friday_afternoon_has_class = True
+                if day == "Mon" and slot_idx in (1, 2):
+                    monday_morning_has_class = True
+
+    if total_meetings > 0:
+        raw_score = (preferred_cnt * 100 + (tolerable_cnt + unrated_cnt) * 85 + disliked_cnt * 35) / total_meetings
+        satisfaction_score = max(0, min(100, round(raw_score)))
+    else:
+        satisfaction_score = 100
+
+    top_choice_matches = 0
+    total_rated_subjects = 0
+    for entry in timetable:
+        sub_code = entry.get("subject_code")
+        teacher_id = entry.get("teacher_id")
+        if sub_code in fac_prefs:
+            total_rated_subjects += 1
+            ratings = fac_prefs[sub_code]
+            if teacher_id and ratings.get(teacher_id) == 1:
+                top_choice_matches += 1
+
+    sem_students = [
+        s for s in store.list_students(semester=student.semester)
+        if s.roll_number in store.student_section_assignments
+    ]
+    if len(sem_students) > 1:
+        cohort_scores = []
+        for other in sem_students:
+            if other.roll_number == student.roll_number:
+                cohort_scores.append(satisfaction_score)
+                continue
+            o_assigns = store.get_student_sections(other.roll_number)
+            o_prefs = store.get_time_preferences(other.roll_number)
+            o_tot = 0
+            o_pts = 0
+            for sc, sid in o_assigns.items():
+                sec = store.get_section(sid)
+                if not sec:
+                    continue
+                for om in sec.meetings:
+                    if not om.slot_key:
+                        continue
+                    o_tot += 1
+                    r = o_prefs.get(om.slot_key)
+                    if r == 1:
+                        o_pts += 100
+                    elif r == 2 or r is None:
+                        o_pts += 85
+                    elif r == 3:
+                        o_pts += 35
+            if o_tot > 0:
+                cohort_scores.append(o_pts / o_tot)
+        cohort_avg = round(sum(cohort_scores) / len(cohort_scores)) if cohort_scores else satisfaction_score
+    else:
+        cohort_avg = satisfaction_score
+
+    perks = []
+    if blocked_cnt == 0:
+        perks.append("100% of blocked slots honored")
+    if not friday_afternoon_has_class:
+        perks.append("Free Friday afternoon")
+    if not monday_morning_has_class:
+        perks.append("Free Monday morning")
+    if satisfaction_score >= 90:
+        perks.append("High preference match")
+
+    return {
+        "satisfaction_score": satisfaction_score,
+        "cohort_average_satisfaction": cohort_avg,
+        "breakdown": {
+            "preferred": preferred_cnt,
+            "tolerable": tolerable_cnt,
+            "unrated": unrated_cnt,
+            "disliked": disliked_cnt,
+            "blocked": blocked_cnt,
+            "total_meetings": total_meetings,
+        },
+        "blocked_overrides": blocked_overrides,
+        "faculty_match": {
+            "top_choice_matches": top_choice_matches,
+            "total_rated_subjects": total_rated_subjects,
+        },
+        "perks": perks,
     }
 

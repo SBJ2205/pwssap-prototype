@@ -106,6 +106,13 @@ def test_student_slot_enrichment():
 
     check("subject_type field present", "subject_type" in first_entry)
 
+    stats = body.get("stats")
+    check("stats present in response", stats is not None)
+    check("satisfaction_score in stats", isinstance(stats.get("satisfaction_score"), int))
+    check("cohort_average_satisfaction in stats", isinstance(stats.get("cohort_average_satisfaction"), int))
+    check("breakdown in stats", "breakdown" in stats and "preferred" in stats["breakdown"])
+    check("blocked_overrides in stats", isinstance(stats.get("blocked_overrides"), list))
+
 
 test_student_slot_enrichment()
 
