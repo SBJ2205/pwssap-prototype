@@ -275,6 +275,9 @@ def get_student_sections(
 
     No admin role required — students access their own data.
     """
+    from domain.saved_runs import ensure_active_run_loaded
+    ensure_active_run_loaded(store)
+
     student = store.get_student(roll_number)
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")

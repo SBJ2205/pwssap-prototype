@@ -108,6 +108,8 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
 
     # Find the current (active or latest) generation run
     latest_run = None
+    from domain.saved_runs import ensure_active_run_loaded
+    ensure_active_run_loaded(store)
     if store.runs:
         active_id = getattr(store, "active_run_id", None)
         if active_id is not None and active_id in store.runs:

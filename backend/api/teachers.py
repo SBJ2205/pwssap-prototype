@@ -149,6 +149,8 @@ def get_teacher_timetable(
     # An unsolved (draft) run only holds placeholder teachers/slots: show none.
     solved_statuses = (RunStatus.SOLVED, RunStatus.PUBLISHED)
     if run_id is None:
+        from domain.saved_runs import ensure_active_run_loaded
+        ensure_active_run_loaded(store)
         active_id = getattr(store, "active_run_id", None)
         if active_id is not None and active_id in store.runs and store.runs[active_id].status in solved_statuses:
             resolved_run = store.runs[active_id]

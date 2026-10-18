@@ -166,6 +166,8 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
     folder = _ensure_dir()
     snapshots = []
     for file_path in folder.glob("*.json"):
+        if file_path.name == "active_run.json":
+            continue
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -270,6 +272,14 @@ def activate_saved_run(store: Any, snapshot_id: str) -> Dict[str, Any]:
     # 6. Set store active run tracker
     store.active_run_id = run_id
 
+    # 7. Persist active run pointer to disk so it survives server reloads and role changes
+    try:
+        folder = _ensure_dir()
+        with open(folder / "active_run.json", "w", encoding="utf-8") as f:
+            json.dump({"active_run_id": run_id, "snapshot_id": snapshot_id}, f, indent=2)
+    except Exception as exc:
+        logger.warning("Failed saving active run pointer: %s", exc)
+
     return {
         "ok": True,
         "active_run_id": run_id,
@@ -354,10 +364,37 @@ def compare_saved_runs(store: Any, snapshot_id_a: str, snapshot_id_b: str) -> Di
     }
 
 
+def ensure_active_run_loaded(store: Any) -> Optional[int]:
+    """If store has no active_run_id, try to load it from the active_run.json pointer file."""
+    if getattr(store, "active_run_id", None) is not None:
+        return store.active_run_id
+    pointer = SAVED_RUNS_DIR / "active_run.json"
+    if pointer.exists():
+        try:
+            with open(pointer, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            snap_id = data.get("snapshot_id")
+            if snap_id and (SAVED_RUNS_DIR / f"{snap_id}.json").exists():
+                res = activate_saved_run(store, snap_id)
+                return res.get("active_run_id")
+        except Exception as exc:
+            logger.warning("Failed restoring active run from pointer: %s", exc)
+    return getattr(store, "active_run_id", None)
+
+
 def delete_saved_snapshot(snapshot_id: str) -> bool:
     """Delete a saved run snapshot file."""
     folder = _ensure_dir()
     file_path = folder / f"{_sanitize_name(snapshot_id)}.json"
+    pointer = folder / "active_run.json"
+    if pointer.exists():
+        try:
+            with open(pointer, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("snapshot_id") == snapshot_id:
+                pointer.unlink(missing_ok=True)
+        except Exception:
+            pass
     if file_path.exists():
         file_path.unlink()
         return True
