@@ -38,3 +38,6 @@ Thumbs.db
 demo_run/
 data_demo/
 backend/data/saved_runs/*.json
+
+# ── Academic Paper (untracked) ──────────────────────────────
+paper/
