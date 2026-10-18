@@ -18,19 +18,21 @@ from domain.models import Meeting
 
 
 _TIME_PENALTIES: Dict[int, int] = {
+    0: 0,
     PreferenceRating.PREFERRED.value: 0,
     PreferenceRating.TOLERABLE.value: 1,
     PreferenceRating.DISLIKED.value:  3,
     PreferenceRating.BLOCKED.value:   9999,
 }
-_DEFAULT_TIME_PENALTY = 2
+_DEFAULT_TIME_PENALTY = 0
 
 _FACULTY_PENALTIES: Dict[int, int] = {
+    0: 0,
     PreferenceRating.PREFERRED.value: 0,
     PreferenceRating.TOLERABLE.value: 1,
     PreferenceRating.DISLIKED.value:  2,
 }
-_DEFAULT_FACULTY_PENALTY = 1
+_DEFAULT_FACULTY_PENALTY = 0
 
 
 def compute_student_gaps(sids: Iterable[int], assigned_meetings: Dict[int, List[Meeting]]) -> int:

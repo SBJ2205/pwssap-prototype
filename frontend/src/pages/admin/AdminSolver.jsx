@@ -82,11 +82,19 @@ export default function AdminSolver({
   const [customLabel, setCustomLabel] = useState("");
   const [savingSnapshot, setSavingSnapshot] = useState(false);
 
+  const [activeSnapshotId, setActiveSnapshotId] = useState(() => {
+    return localStorage.getItem("pwssap_active_snapshot_id") || "";
+  });
+
   const fetchSnapshots = useCallback(async () => {
     try {
       setLoadingSnapshots(true);
       const res = await listSavedRuns();
       const list = res?.snapshots || [];
+      if (res?.active_snapshot_id) {
+        setActiveSnapshotId(res.active_snapshot_id);
+        localStorage.setItem("pwssap_active_snapshot_id", res.active_snapshot_id);
+      }
       setSavedSnapshots(list);
       if (list.length >= 2) {
         setSelectedRunA((prev) => prev || list[1]?.snapshot_id || list[0]?.snapshot_id || "");
@@ -124,6 +132,8 @@ export default function AdminSolver({
   const handleActivateSnapshot = async (snapshotId) => {
     try {
       const res = await activateSavedRun(snapshotId);
+      setActiveSnapshotId(snapshotId);
+      localStorage.setItem("pwssap_active_snapshot_id", snapshotId);
       setSnapshotActionMsg({ type: "success", text: `✓ Activated "${res.label || snapshotId}" as the live timetable!` });
       if (setActiveRunId) setActiveRunId(res.active_run_id);
       if (setInternalRunId) setInternalRunId(res.active_run_id);
@@ -573,11 +583,37 @@ export default function AdminSolver({
 
       {/* Solver Execution Card */}
       <Card>
-        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
-          Execute CP-SAT Solver
-        </div>
-        <div style={{ fontSize: 12, color: "#777", marginBottom: 14 }}>
-          Runs the CP-SAT optimization engine for the department cycle (Run #{currentRunId || "—"}).
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+              Execute CP-SAT Solver
+            </div>
+            <div style={{ fontSize: 12, color: "#777" }}>
+              Runs the CP-SAT optimization engine for the department cycle (Run #{currentRunId || "—"}).
+            </div>
+          </div>
+          {(() => {
+            const activeSnapshot = savedSnapshots.find(s => s.snapshot_id === activeSnapshotId);
+            if (!activeSnapshot) return null;
+            const isTrad = activeSnapshot.mode === "traditional";
+            return (
+              <div style={{
+                background: isTrad ? "#fef3c7" : "#e0f2fe",
+                border: `1.5px solid ${isTrad ? "#fcd34d" : "#bae6fd"}`,
+                padding: "4px 10px",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                color: isTrad ? "#92400e" : "#0369a1",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}>
+                <span>{isTrad ? "🏛 Active Mode: Traditional Cohort" : "⚡ Active Mode: PWSSAP Elective"}</span>
+                <span style={{ fontSize: 11, fontWeight: 500, color: "#475569" }}>({activeSnapshot.label})</span>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Solver Configuration */}
@@ -939,15 +975,32 @@ export default function AdminSolver({
               )}
             </div>
 
-            <MetricsRow
-              items={[
-                { val: solveResult.objective_value ?? 0, label: "Objective Penalty", tip: "Total weighted penalty of the delivered assignment (blocked slots 2000 each, plus time-slot, faculty and section-balance terms)." },
-                { val: solveResult.blocked_placements ?? "—", label: solveResult.blocked_minimum_proven ? "Blocked Placements (proven min)" : "Blocked Placements", tip: "Students placed in a slot they blocked. 'Proven min' means no assignment of this master timetable can do better." },
-                { val: `${solveResult.wall_time_seconds?.toFixed(2) || "0"}s`, label: "Solve Duration", tip: "Total execution time taken by the CP-SAT engine." },
-                { val: solveResult.num_conflicts ?? 0, label: "Solver Conflicts", tip: "Internal search conflicts explored before reaching optimality." },
-                { val: solveResult.sections?.length || 0, label: "Assigned Sections", tip: "Total class sections scheduled." },
-              ]}
-            />
+            {(() => {
+              const breakdown = solveResult.penalty_breakdown;
+              const hasBreakdown = breakdown && typeof breakdown === "object";
+              const isPrefZero = hasBreakdown && (breakdown.time_pref_penalty || 0) === 0 && (breakdown.faculty_pref_penalty || 0) === 0;
+              const penaltyTip = isPrefZero
+                ? `Student & Faculty preferences penalty is 0 (100% satisfied). The penalty of ${solveResult.objective_value ?? 0} comes entirely from parallel section load balancing across cohort divisions.`
+                : hasBreakdown
+                ? `Penalty breakdown: ${breakdown.load_balance_penalty || 0} section balance, ${breakdown.time_pref_penalty || 0} time prefs, ${breakdown.faculty_pref_penalty || 0} faculty prefs.`
+                : "Total weighted penalty of the delivered assignment (blocked slots 2000 each, plus time-slot, faculty and section-balance terms).";
+
+              return (
+                <MetricsRow
+                  items={[
+                    {
+                      val: solveResult.objective_value ?? 0,
+                      label: isPrefZero ? "Objective Penalty (0 Prefs)" : "Objective Penalty",
+                      tip: penaltyTip,
+                    },
+                    { val: solveResult.blocked_placements ?? "—", label: solveResult.blocked_minimum_proven ? "Blocked Placements (proven min)" : "Blocked Placements", tip: "Students placed in a slot they blocked. 'Proven min' means no assignment of this master timetable can do better." },
+                    { val: `${solveResult.wall_time_seconds?.toFixed(2) || "0"}s`, label: "Solve Duration", tip: "Total execution time taken by the CP-SAT engine." },
+                    { val: solveResult.num_conflicts ?? 0, label: "Solver Conflicts", tip: "Internal search conflicts explored before reaching optimality." },
+                    { val: solveResult.sections?.length || 0, label: "Assigned Sections", tip: "Total class sections scheduled." },
+                  ]}
+                />
+              );
+            })()}
 
             {/* Multi-Candidate Master TT Leaderboard */}
             {solveResult.candidates && solveResult.candidates.length > 1 && (
@@ -1177,8 +1230,7 @@ export default function AdminSolver({
                 </tr>
               ) : (
                 savedSnapshots.map((s) => {
-                  const activeId = activeRunId != null ? Number(activeRunId) : (currentRunId != null ? Number(currentRunId) : null);
-                  const isActive = activeId != null && s.run_id === activeId;
+                  const isActive = s.is_active || (activeSnapshotId ? s.snapshot_id === activeSnapshotId : false);
                   const isElective = s.mode === "pwssap_elective" || s.mode === "elective";
                   return (
                     <tr

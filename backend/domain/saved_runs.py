@@ -87,7 +87,7 @@ def save_run_snapshot(store: Any, run_id: int, label: Optional[str] = None) -> O
         if run is None:
             return None
 
-        plan = store.traditional_plans.get(run_id)
+        plan = get_live_plan(store, run_id)
         mode = "traditional" if plan is not None else "elective"
         semesters = list(run.semesters) if getattr(run, "semesters", None) else [run.semester]
         sem_str = "-".join(str(s) for s in sorted(semesters))
@@ -107,8 +107,20 @@ def save_run_snapshot(store: Any, run_id: int, label: Optional[str] = None) -> O
         }
 
         # Format snapshot ID and metadata
-        snapshot_id = f"run_{run_id}_{mode}_sem{sem_str}"
         default_label = f"Sem {', '.join(str(s) for s in semesters)} ({mode.capitalize()})"
+        if label:
+            clean_lbl = _sanitize_name(label).lower().replace(" ", "_")
+            base_id = f"run_{run_id}_{clean_lbl}"
+        else:
+            base_id = f"run_{run_id}_{mode}_sem{sem_str}"
+
+        # Avoid overwriting an existing snapshot — append a counter if the file exists
+        folder = _ensure_dir()
+        snapshot_id = base_id
+        counter = 2
+        while (folder / f"{snapshot_id}.json").exists():
+            snapshot_id = f"{base_id}_v{counter}"
+            counter += 1
 
         created_at = datetime.now(timezone.utc).isoformat()
 
@@ -122,18 +134,44 @@ def save_run_snapshot(store: Any, run_id: int, label: Optional[str] = None) -> O
                     f"{sem}_{b}": div for (sem, b), div in plan.batch_division_map.items()
                 },
                 "warnings": list(plan.warnings),
+                "sections": {
+                    str(sid): {
+                        "section_id": info.section_id,
+                        "semester": info.semester,
+                        "subject_code": info.subject_code,
+                        "label": info.label,
+                        "kind": info.kind,
+                        "division": info.division,
+                        "batch": info.batch,
+                        "class_id": info.class_id,
+                        "batch_id": info.batch_id,
+                    }
+                    for sid, info in plan.sections.items()
+                },
+                "division_names": {
+                    f"{sem}_{k}": name for (sem, k), name in getattr(plan, "division_names", {}).items()
+                },
+                "batch_names": {
+                    f"{sem}_{b}": name for (sem, b), name in getattr(plan, "batch_names", {}).items()
+                },
+                "config_snapshot": getattr(plan, "config_snapshot", {}),
             }
+
+        display_label = label or default_label
+        if counter > 2:
+            display_label = f"{display_label} #{counter - 1}"
 
         snapshot_payload = {
             "snapshot_id": snapshot_id,
             "run_id": run_id,
-            "label": label or default_label,
+            "label": display_label,
             "mode": mode,
             "semesters": semesters,
             "created_at": created_at,
             "metrics": {
                 "status": solve_diag.get("status", run.status.value if hasattr(run.status, "value") else str(run.status)),
                 "objective_value": solve_diag.get("objective_value"),
+                "penalty_breakdown": solve_diag.get("penalty_breakdown", {}),
                 "blocked_placements": solve_diag.get("blocked_placements"),
                 "blocked_minimum_proven": solve_diag.get("blocked_minimum_proven"),
                 "wall_time_seconds": solve_diag.get("wall_time_seconds"),
@@ -148,7 +186,6 @@ def save_run_snapshot(store: Any, run_id: int, label: Optional[str] = None) -> O
             "traditional_plan": plan_dict,
         }
 
-        folder = _ensure_dir()
         file_path = folder / f"{snapshot_id}.json"
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(snapshot_payload, f, indent=2)
@@ -161,9 +198,25 @@ def save_run_snapshot(store: Any, run_id: int, label: Optional[str] = None) -> O
         return None
 
 
-def list_saved_snapshots() -> List[Dict[str, Any]]:
+def get_active_snapshot_id(store: Optional[Any] = None) -> Optional[str]:
+    """Get the currently active snapshot ID from store or pointer file."""
+    if store is not None and getattr(store, "active_snapshot_id", None):
+        return store.active_snapshot_id
+    pointer = SAVED_RUNS_DIR / "active_run.json"
+    if pointer.exists():
+        try:
+            with open(pointer, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("snapshot_id")
+        except Exception:
+            pass
+    return None
+
+
+def list_saved_snapshots(store: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Return summary metadata for all saved runs on disk."""
     folder = _ensure_dir()
+    active_snap = get_active_snapshot_id(store)
     snapshots = []
     for file_path in folder.glob("*.json"):
         if file_path.name == "active_run.json":
@@ -171,8 +224,9 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            snap_id = data.get("snapshot_id", file_path.stem)
             snapshots.append({
-                "snapshot_id": data.get("snapshot_id", file_path.stem),
+                "snapshot_id": snap_id,
                 "run_id": data.get("run_id"),
                 "label": data.get("label", file_path.stem),
                 "mode": data.get("mode", "unknown"),
@@ -181,6 +235,7 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
                 "metrics": data.get("metrics", {}),
                 "section_count": len(data.get("sections", [])),
                 "student_count": len(data.get("student_assignments", {})),
+                "is_active": (snap_id == active_snap) if active_snap else False,
             })
         except Exception as exc:
             logger.warning("Error reading snapshot %s: %s", file_path, exc)
@@ -249,21 +304,90 @@ def activate_saved_run(store: Any, snapshot_id: str) -> Dict[str, Any]:
         store.latest_solve_results[run_id]["run_id"] = run_id
         store.latest_solve_results[run_id]["sections"] = snapshot.get("sections", [])
 
-    # 5. Restore TraditionalPlan if present
+    # 5. Restore TraditionalPlan if present or if mode is traditional
     plan_dict = snapshot.get("traditional_plan")
-    if plan_dict:
+    is_traditional = (snapshot.get("mode") == "traditional") or (plan_dict is not None)
+    if is_traditional:
         b_map = {}
-        for k_str, div in plan_dict.get("batch_division_map", {}).items():
-            parts = k_str.split("_")
-            if len(parts) == 2:
-                b_map[(int(parts[0]), int(parts[1]))] = div
+        div_names = {}
+        batch_names = {}
+        sec_map = {}
+        pins = {}
+        sync_groups = []
+        warnings = []
+        config_snapshot = {}
+
+        if plan_dict:
+            for k_str, div in plan_dict.get("batch_division_map", {}).items():
+                parts = k_str.split("_")
+                if len(parts) == 2:
+                    b_map[(int(parts[0]), int(parts[1]))] = div
+
+            for k_str, name in plan_dict.get("division_names", {}).items():
+                parts = k_str.split("_")
+                if len(parts) == 2:
+                    div_names[(int(parts[0]), int(parts[1]))] = name
+
+            for k_str, name in plan_dict.get("batch_names", {}).items():
+                parts = k_str.split("_")
+                if len(parts) == 2:
+                    batch_names[(int(parts[0]), int(parts[1]))] = name
+
+            pins = plan_dict.get("pins", {})
+            sync_groups = plan_dict.get("sync_groups", [])
+            warnings = plan_dict.get("warnings", [])
+            config_snapshot = plan_dict.get("config_snapshot", {})
+
+            if "sections" in plan_dict and plan_dict["sections"]:
+                for sid_str, s_info in plan_dict["sections"].items():
+                    sec_map[int(sid_str)] = SectionInfo(
+                        section_id=int(s_info["section_id"]),
+                        semester=int(s_info["semester"]),
+                        subject_code=s_info["subject_code"],
+                        label=s_info["label"],
+                        kind=s_info["kind"],
+                        division=s_info.get("division"),
+                        batch=s_info.get("batch"),
+                        class_id=s_info.get("class_id"),
+                        batch_id=s_info.get("batch_id"),
+                    )
+
+        # Fallback / ensure sec_map covers all restored sections
+        for s_dict in snapshot.get("sections", []):
+            sid = int(s_dict["id"])
+            if sid not in sec_map:
+                lbl = s_dict.get("label", "")
+                sub_code = s_dict.get("subject_code", "")
+                kind = "dispersal"
+                if "-T" in lbl:
+                    kind = "division_theory"
+                elif "-L" in lbl:
+                    kind = "batch_lab"
+                subj = store.get_subject(sub_code)
+                sem = subj.semester if subj else (semesters[0] if semesters else 0)
+                sec_map[sid] = SectionInfo(
+                    section_id=sid,
+                    semester=sem,
+                    subject_code=sub_code,
+                    label=lbl,
+                    kind=kind,
+                )
+
+        # If pins were empty in plan_dict, use student_assignments as pins
+        if not pins and snapshot.get("student_assignments"):
+            pins = {roll: dict(m) for roll, m in snapshot.get("student_assignments", {}).items()}
+
         plan = TraditionalPlan(
             run_id=run_id,
             semesters=semesters,
-            pins=plan_dict.get("pins", {}),
-            sync_groups=plan_dict.get("sync_groups", []),
+            sections=sec_map,
+            pins=pins,
+            sync_groups=sync_groups,
             batch_division_map=b_map,
-            warnings=plan_dict.get("warnings", []),
+            warnings=warnings,
+            division_names=div_names,
+            batch_names=batch_names,
+            config_snapshot=config_snapshot,
         )
         store.traditional_plans[run_id] = plan
     else:
@@ -271,6 +395,7 @@ def activate_saved_run(store: Any, snapshot_id: str) -> Dict[str, Any]:
 
     # 6. Set store active run tracker
     store.active_run_id = run_id
+    store.active_snapshot_id = snapshot_id
 
     # 7. Persist active run pointer to disk so it survives server reloads and role changes
     try:
@@ -283,6 +408,7 @@ def activate_saved_run(store: Any, snapshot_id: str) -> Dict[str, Any]:
     return {
         "ok": True,
         "active_run_id": run_id,
+        "active_snapshot_id": snapshot_id,
         "label": snapshot.get("label"),
         "mode": snapshot.get("mode"),
         "semesters": semesters,
@@ -368,6 +494,8 @@ def ensure_active_run_loaded(store: Any) -> Optional[int]:
     """If store has no active_run_id, try to load it from the active_run.json pointer file."""
     if getattr(store, "active_run_id", None) is not None:
         return store.active_run_id
+    if getattr(store, "runs", None) or getattr(store, "student_section_assignments", None) or getattr(store, "sections", None):
+        return getattr(store, "active_run_id", None)
     pointer = SAVED_RUNS_DIR / "active_run.json"
     if pointer.exists():
         try:

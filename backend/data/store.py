@@ -82,6 +82,7 @@ class InMemoryStore:
         self.cohort_configs: Dict[int, Any] = {}
         self.traditional_plans: Dict[int, Any] = {}
         self.active_run_id: Optional[int] = None
+        self.active_snapshot_id: Optional[str] = None
         # At most one solve (or feasibility check) may run at a time: the
         # store is a single shared timetable and the solver is CPU-bound.
         self._solve_lock = threading.Lock()

@@ -123,6 +123,7 @@ def solve_run(
         "stage2_status": result.stage2_status,
         "blocked_placements": result.blocked_placements,
         "blocked_minimum_proven": result.blocked_minimum_proven,
+        "penalty_breakdown": getattr(result, "penalty_breakdown", {}),
         "sections": [_section_to_dict(s) for s in sections],
         "student_section_assignments": result.student_section_assignments,
         "candidates": result.candidates,
@@ -131,6 +132,7 @@ def solve_run(
 
     # Cache for UI persistence across page switches
     store.latest_solve_results[run_id] = resp
+    store.active_run_id = run_id
     try:
         from domain.saved_runs import save_run_snapshot
         save_run_snapshot(store, run_id)

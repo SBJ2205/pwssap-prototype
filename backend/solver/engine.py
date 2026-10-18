@@ -52,19 +52,21 @@ from solver.gap_reduction import reduce_schedule_gaps
 
 
 _TIME_PREF_PENALTY: Dict[int, int] = {
+    0: 0,  # Indifferent / unrated has 0 penalty
     PreferenceRating.PREFERRED.value: 0,
     PreferenceRating.TOLERABLE.value: 1,
     PreferenceRating.DISLIKED.value:  3,
     PreferenceRating.BLOCKED.value:   400,  # 400 * _TIME_WEIGHT (5) = 2,000 priority penalty
 }
-_DEFAULT_TIME_PENALTY = 2
+_DEFAULT_TIME_PENALTY = 0
 
 _FACULTY_PREF_PENALTY: Dict[int, int] = {
+    0: 0,  # Indifferent / unrated has 0 penalty
     PreferenceRating.PREFERRED.value: 0,
     PreferenceRating.TOLERABLE.value: 1,
     PreferenceRating.DISLIKED.value:  2,
 }
-_DEFAULT_FACULTY_PENALTY = 1
+_DEFAULT_FACULTY_PENALTY = 0
 
 _TIME_WEIGHT = 5
 _FACULTY_WEIGHT = 1
@@ -120,6 +122,7 @@ class SolverResult:
     # timetable; and whether that count is the proven minimum for it.
     blocked_placements: Optional[int] = None
     blocked_minimum_proven: Optional[bool] = None
+    penalty_breakdown: Dict[str, int] = field(default_factory=dict)
 
 
 def _batch_division(
@@ -900,12 +903,12 @@ def _score_pinned_assignments(
                     blocked_violations.append((roll, sub_code, m.slot_key))
                     total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY[blocked_value]
                 elif rating is not None:
-                    total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
+                    total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY.get(rating, 0)
             teacher_id = assigned_teachers.get(sid)
             if teacher_id:
                 f_rating = fac_pref.get(sub_code, {}).get(teacher_id)
-                if f_rating is not None and f_rating != _DEFAULT_FACULTY_PENALTY:
-                    total_penalty += _FACULTY_WEIGHT * _FACULTY_PREF_PENALTY.get(f_rating, _DEFAULT_FACULTY_PENALTY)
+                if f_rating is not None:
+                    total_penalty += _FACULTY_WEIGHT * _FACULTY_PREF_PENALTY.get(f_rating, 0)
     return len(blocked_violations), total_penalty, blocked_violations
 
 
@@ -932,20 +935,46 @@ def _stage2(
     effective_time_limit = float(budget)
     stage1_elapsed = 0.0
 
-    if score_only and inp.pinned_student_sections is not None:
-        blocked_cnt, total_pen, _ = _score_pinned_assignments(
+    if inp.pinned_student_sections is not None:
+        blocked_cnt, total_pen, blocked_violations = _score_pinned_assignments(
             inp, assigned_meetings, assigned_teachers
         )
-        return SolverResult(
-            status="SCORED",
-            wall_time_seconds=round(time.monotonic() - total_t0, 3),
+        if score_only:
+            return SolverResult(
+                status="SCORED",
+                wall_time_seconds=round(time.monotonic() - total_t0, 3),
+                num_conflicts=int(s1.num_conflicts),
+                stage1_status=status1_str,
+                stage2_status="SCORED",
+                blocked_placements=blocked_cnt,
+                blocked_minimum_proven=True,
+                objective_value=total_pen,
+            )
+
+        elapsed = time.monotonic() - total_t0
+        overall_status = "OPTIMAL" if status1_str == "OPTIMAL" else status1_str
+        res = SolverResult(
+            status=overall_status,
+            section_slot_assignments=assigned_slot_keys,
+            section_meetings=assigned_meetings,
+            section_teacher_assignments=assigned_teachers,
+            wall_time_seconds=round(elapsed, 3),
             num_conflicts=int(s1.num_conflicts),
             stage1_status=status1_str,
-            stage2_status="SCORED",
-            blocked_placements=blocked_cnt,
+            stage2_status="OPTIMAL",
             blocked_minimum_proven=True,
+            blocked_placements=blocked_cnt,
             objective_value=total_pen,
+            student_section_assignments={roll: dict(m) for roll, m in inp.pinned_student_sections.items()},
         )
+        if blocked_violations:
+            examples = ", ".join(f"{roll} ({sub} @ {sk})" for roll, sub, sk in blocked_violations[:5])
+            more = f" and {len(blocked_violations) - 5} more" if len(blocked_violations) > 5 else ""
+            res.warnings.append(
+                f"Traditional timetable: {blocked_cnt} student placement(s) in blocked slots across "
+                f"{len(inp.pinned_student_sections)} pinned students: {examples}{more}."
+            )
+        return res
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2: Automated Student Section Allocation
@@ -1027,11 +1056,12 @@ def _stage2(
             for m in assigned_meetings.get(sid, []):
                 rating = time_pref.get(m.slot_key)
                 if rating is None:
-                    continue
+                    continue  # No preference set (indifferent) → 0 penalty
                 if rating == blocked_value:
                     n_blocked += 1
                 else:
-                    penalty = _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
+                    # Use dict lookup only; if rating is unknown treat as 0 (not DEFAULT=2)
+                    penalty = _TIME_PREF_PENALTY.get(rating, 0)
                     if penalty > 0:
                         other_terms.append(cp_model.LinearExpr.term(v, _TIME_WEIGHT * penalty))
             if n_blocked:
@@ -1245,6 +1275,8 @@ def _stage2(
             )
     elif not inp.feasibility_only and res.status in ("OPTIMAL", "FEASIBLE"):
         total_penalty = 0
+        time_penalty = 0
+        faculty_penalty = 0
         blocked_violations: List[Tuple[str, str, str]] = []
         section_load: Dict[int, int] = defaultdict(int)
         for roll, sub_assignments in res.student_section_assignments.items():
@@ -1256,21 +1288,34 @@ def _stage2(
                     rating = time_pref.get(m.slot_key)
                     if rating == blocked_value:
                         blocked_violations.append((roll, sub, m.slot_key))
-                        total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY[blocked_value]
+                        pen = _TIME_WEIGHT * _TIME_PREF_PENALTY[blocked_value]
+                        time_penalty += pen
+                        total_penalty += pen
                     elif rating is not None:
-                        total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
+                        pen = _TIME_WEIGHT * _TIME_PREF_PENALTY.get(rating, 0)
+                        time_penalty += pen
+                        total_penalty += pen
                 teacher_id = assigned_teachers.get(sid)
                 if teacher_id:
                     f_rating = fac_pref.get(sub, {}).get(teacher_id)
-                    if f_rating is not None and f_rating != _DEFAULT_FACULTY_PENALTY:
-                        total_penalty += _FACULTY_WEIGHT * _FACULTY_PREF_PENALTY.get(f_rating, _DEFAULT_FACULTY_PENALTY)
+                    if f_rating is not None:
+                        pen = _FACULTY_WEIGHT * _FACULTY_PREF_PENALTY.get(f_rating, 0)
+                        faculty_penalty += pen
+                        total_penalty += pen
+        load_balance_penalty = 0
         for sc, sids in subject_sections.items():
             tot = len(inp.subject_students.get(sc, []))
             if len(sids) >= 2 and tot > 0:
                 ideal = tot // len(sids)
-                total_penalty += sum(2 * abs(section_load.get(sid, 0) - ideal) for sid in sids)
+                load_balance_penalty += sum(2 * abs(section_load.get(sid, 0) - ideal) for sid in sids)
+        total_penalty += load_balance_penalty
 
         res.objective_value = total_penalty
+        res.penalty_breakdown = {
+            "time_pref_penalty": time_penalty,
+            "faculty_pref_penalty": faculty_penalty,
+            "load_balance_penalty": load_balance_penalty,
+        }
         res.blocked_placements = len(blocked_violations)
 
         if blocked_violations:

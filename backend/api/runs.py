@@ -61,10 +61,14 @@ class SaveSnapshotPayload(BaseModel):
 
 
 @router.get("/saved")
-def get_saved_runs():
+def get_saved_runs(store: InMemoryStore = Depends(get_store)):
     """List all saved timetable runs across all semester cycles."""
-    from domain.saved_runs import list_saved_snapshots
-    return {"snapshots": list_saved_snapshots()}
+    from domain.saved_runs import list_saved_snapshots, get_active_snapshot_id
+    active_snap = get_active_snapshot_id(store)
+    return {
+        "snapshots": list_saved_snapshots(store),
+        "active_snapshot_id": active_snap,
+    }
 
 
 @router.get("/compare")
