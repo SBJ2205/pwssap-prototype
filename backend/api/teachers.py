@@ -149,8 +149,12 @@ def get_teacher_timetable(
     # An unsolved (draft) run only holds placeholder teachers/slots: show none.
     solved_statuses = (RunStatus.SOLVED, RunStatus.PUBLISHED)
     if run_id is None:
-        solved_runs = [r for r in store.list_runs() if r.status in solved_statuses]
-        resolved_run = max(solved_runs, key=lambda r: r.id) if solved_runs else None
+        active_id = getattr(store, "active_run_id", None)
+        if active_id is not None and active_id in store.runs and store.runs[active_id].status in solved_statuses:
+            resolved_run = store.runs[active_id]
+        else:
+            solved_runs = [r for r in store.list_runs() if r.status in solved_statuses]
+            resolved_run = max(solved_runs, key=lambda r: r.id) if solved_runs else None
     else:
         resolved_run = store.get_run(run_id)
         if resolved_run is None:

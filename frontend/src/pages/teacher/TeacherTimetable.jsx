@@ -10,6 +10,13 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
   const { identity: teacherId } = session;
 
   const [selectedRunId, setSelectedRunId] = useState(activeRunId ?? null);
+
+  useEffect(() => {
+    if (activeRunId != null) {
+      setSelectedRunId(activeRunId);
+    }
+  }, [activeRunId]);
+
   const [timetable, setTimetable] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

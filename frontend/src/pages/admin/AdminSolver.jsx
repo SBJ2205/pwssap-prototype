@@ -27,10 +27,11 @@ export default function AdminSolver({
   setPage,
   activeRunId,
   setActiveRunId,
+  refreshRuns,
 }) {
   const [internalRunId, setInternalRunId] = useState(null);
   const currentRun = cycleStatus?.current_run;
-  const currentRunId = internalRunId != null ? internalRunId : (currentRun?.id != null ? currentRun.id : activeRunId);
+  const currentRunId = activeRunId != null ? activeRunId : (internalRunId != null ? internalRunId : (currentRun?.id != null ? currentRun.id : null));
 
   // Preflight data counts
   const [subjectsCount, setSubjectsCount] = useState(0);
@@ -126,7 +127,8 @@ export default function AdminSolver({
       setSnapshotActionMsg({ type: "success", text: `✓ Activated "${res.label || snapshotId}" as the live timetable!` });
       if (setActiveRunId) setActiveRunId(res.active_run_id);
       if (setInternalRunId) setInternalRunId(res.active_run_id);
-      if (refreshCycle) refreshCycle();
+      if (refreshRuns) await refreshRuns();
+      if (refreshCycle) await refreshCycle();
       try {
         const diag = await getSolveResult(res.active_run_id);
         setSolveResult(diag);
@@ -1175,7 +1177,8 @@ export default function AdminSolver({
                 </tr>
               ) : (
                 savedSnapshots.map((s) => {
-                  const isActive = (currentRunId != null && s.run_id === Number(currentRunId)) || (activeRunId != null && s.run_id === Number(activeRunId));
+                  const activeId = activeRunId != null ? Number(activeRunId) : (currentRunId != null ? Number(currentRunId) : null);
+                  const isActive = activeId != null && s.run_id === activeId;
                   const isElective = s.mode === "pwssap_elective" || s.mode === "elective";
                   return (
                     <tr

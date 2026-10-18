@@ -228,10 +228,18 @@ def activate_saved_run(store: Any, snapshot_id: str) -> Dict[str, Any]:
         sec.run_id = run_id
         store.sections[sec.id] = sec
 
-    # 3. Restore student-section assignments
+    # 3. Clean and restore student-section assignments for relevant semesters
+    relevant_rolls = {
+        s.roll_number for s in store.list_students()
+        if s.semester in semesters
+    }
+    for roll in relevant_rolls:
+        store.student_section_assignments.pop(roll, None)
+
     for roll, mapping in snapshot.get("student_assignments", {}).items():
-        for subj_code, sid in mapping.items():
-            store.enroll_student(roll, subj_code, sid)
+        store.student_section_assignments[roll] = {
+            subj_code: int(sid) for subj_code, sid in mapping.items()
+        }
 
     # 4. Restore solver diagnostics cache
     if "metrics" in snapshot:

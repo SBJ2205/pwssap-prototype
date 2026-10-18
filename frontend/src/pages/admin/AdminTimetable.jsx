@@ -27,7 +27,7 @@ export default function AdminTimetable({
   // Roster modal
   const [activeRosterSection, setActiveRosterSection] = useState(null);
 
-  const effectiveRunId = cycleStatus?.current_run?.id || activeRunId || (runs.length > 0 ? runs[runs.length - 1].id : null);
+  const effectiveRunId = activeRunId || cycleStatus?.current_run?.id || (runs.length > 0 ? runs[runs.length - 1].id : null);
 
   const loadSummary = useCallback(async () => {
     if (!effectiveRunId) {
