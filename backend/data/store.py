@@ -14,7 +14,7 @@ not demo data — see domain/timeslots.py.
 """
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from domain.models import (
     ChoiceTagConfig,
@@ -26,7 +26,7 @@ from domain.models import (
     Teacher,
     TeacherSubjectCapability,
 )
-from domain.cohorts import SemesterCohortConfig, ClassCohort, LabBatch
+
 from domain.timeslots import TimeSlot, build_canonical_grid, is_slot_usable
 
 
@@ -75,8 +75,12 @@ class InMemoryStore:
         # Set of run_ids for which cancellation has been requested
         self.cancel_requested_runs: set = set()
 
-        # Traditional Division & Batch Cohort configurations: semester -> SemesterCohortConfig
-        self.cohort_configs: Dict[int, SemesterCohortConfig] = {}
+        # Traditional Division & Batch mode state. Owned by domain/cohorts.py and
+        # domain/traditional_*.py; the store only holds it.
+        #   cohort_configs:    semester -> SemesterCohortConfig (saved divisions/batches)
+        #   traditional_plans: run_id -> TraditionalPlan (pins, sync groups, batch map)
+        self.cohort_configs: Dict[int, Any] = {}
+        self.traditional_plans: Dict[int, Any] = {}
         # At most one solve (or feasibility check) may run at a time: the
         # store is a single shared timetable and the solver is CPU-bound.
         self._solve_lock = threading.Lock()
@@ -128,6 +132,7 @@ class InMemoryStore:
         self.student_faculty_preferences.clear()
         self.student_section_assignments.clear()
         self.cycle_choice_configs.clear()
+        self.traditional_plans.clear()
         self._next_section_id = 1
         self._next_run_id = 1
         return count
@@ -263,6 +268,7 @@ class InMemoryStore:
         self.student_faculty_preferences.clear()
         self.student_section_assignments.clear()
         self.cohort_configs.clear()
+        self.traditional_plans.clear()
         self.sections.clear()
         self.runs.clear()
         self._next_section_id = 1
@@ -560,178 +566,6 @@ class InMemoryStore:
             if section.teacher_id == teacher_id and section.id != exclude_section_id:
                 occupied.extend(m.slot_key for m in section.meetings if m.slot_key)
         return occupied
-
-    # ── Traditional Cohort & Batch configurations ───────────────────────────
-    def get_semester_cohorts(self, semester: int) -> Optional[SemesterCohortConfig]:
-        return self.cohort_configs.get(semester)
-
-    def set_semester_cohorts(self, semester: int, config: SemesterCohortConfig) -> SemesterCohortConfig:
-        self.cohort_configs[semester] = config
-        return config
-
-    def clear_semester_cohorts(self, semester: Optional[int] = None) -> None:
-        if semester is not None:
-            self.cohort_configs.pop(semester, None)
-        else:
-            self.cohort_configs.clear()
-
-    def detect_pe_clusters(self, semester: int) -> dict:
-        """Analyze semester roster and subjects to detect Professional Elective (PE) clusters.
-
-        Rules:
-        - If the semester offers a PE tag with >= 2 distinct subjects/subtags:
-          Students are grouped into clusters based on their locked-in PE choice.
-          Admin can then create 1 or more divisions within each cluster.
-        - If the semester has no PE (or PE has only 1 subject):
-          All students form a single pool ("ALL"), which the admin can partition into divisions.
-        - Dispersal vs. In-Class Electives:
-          - If a non-PE elective tag has >= 2 distinct subjects (e.g. Sem 4 MDM), it is marked
-            as a dispersal elective (students disperse into synchronized blocks).
-          - CRITICAL EDGE CASE: If an elective tag has only 1 subject (e.g. Sem 6 MDM with only 1 subject),
-            it is marked as an in-class elective (is_dispersal = False). All students take it
-            within their regular class cohort; no dispersal occurs!
-        """
-        sem_students = [s for s in self.students.values() if s.semester == semester]
-        sem_students.sort(key=lambda s: s.roll_number)
-        sem_subjects = self.list_subjects(semester=semester)
-
-        # Group subjects by upper-case tag
-        tags_map: Dict[str, List[Subject]] = {}
-        for s in sem_subjects:
-            tag_upper = (s.subject_tag or "").strip().upper()
-            tags_map.setdefault(tag_upper, []).append(s)
-
-        # Candidate PE tag: check for PE tags with >= 2 distinct subjects/subtags
-        pe_tag_candidate: Optional[str] = None
-        for tag_upper in tags_map:
-            if tag_upper == "PE" or tag_upper.startswith("PE") or "PROFESSIONAL" in tag_upper:
-                subjs = tags_map[tag_upper]
-                distinct_codes = {s.subject_code for s in subjs}
-                distinct_subtags = set()
-                for s in subjs:
-                    for st in s.supported_subtags:
-                        distinct_subtags.add(st)
-                if len(distinct_codes) >= 2 or len(distinct_subtags) >= 2:
-                    pe_tag_candidate = tag_upper
-                    break
-
-        has_pe = pe_tag_candidate is not None
-        clusters = []
-
-        if has_pe:
-            pe_subjects = tags_map[pe_tag_candidate]
-            subtag_to_subj = {}
-            for s in pe_subjects:
-                for st in s.supported_subtags:
-                    subtag_to_subj[st] = s
-                subtag_to_subj[s.subject_code] = s
-
-            cluster_students: Dict[str, List[Student]] = {}
-            for st in sem_students:
-                lock_in = self.get_lock_in_for_student(st.roll_number)
-                chosen = None
-                for k, v in lock_in.items():
-                    if k.strip().upper() == pe_tag_candidate:
-                        chosen = str(v).strip()
-                        break
-                if not chosen:
-                    chosen = "UNASSIGNED"
-                cluster_students.setdefault(chosen, []).append(st)
-
-            for track_id, st_list in sorted(cluster_students.items(), key=lambda x: x[0]):
-                subj = subtag_to_subj.get(track_id)
-                track_name = subj.subject_name if subj else (track_id if track_id != "UNASSIGNED" else "Unassigned PE")
-                subj_code = subj.subject_code if subj else None
-                clusters.append({
-                    "track_id": track_id,
-                    "track_name": track_name,
-                    "subject_code": subj_code,
-                    "student_count": len(st_list),
-                    "students": [{"roll_number": s.roll_number, "name": s.name} for s in st_list],
-                    "suggested_divisions": max(1, round(len(st_list) / 60)),
-                })
-        else:
-            clusters.append({
-                "track_id": "ALL",
-                "track_name": f"Semester {semester} Cohort",
-                "subject_code": None,
-                "student_count": len(sem_students),
-                "students": [{"roll_number": s.roll_number, "name": s.name} for s in sem_students],
-                "suggested_divisions": max(1, round(len(sem_students) / 60)),
-            })
-
-        dispersal_electives = []
-        in_class_electives = []
-        core_subjects = []
-
-        cb_tags = self.get_choice_based_tags_for_semester(semester)
-        cb_tags_upper = {t.strip().upper() for t in cb_tags}
-
-        for tag_upper, subjs in tags_map.items():
-            if has_pe and tag_upper == pe_tag_candidate:
-                continue
-
-            distinct_codes = {s.subject_code for s in subjs}
-            distinct_subtags = set()
-            for s in subjs:
-                for st in s.supported_subtags:
-                    distinct_subtags.add(st)
-
-            is_elective_tag = (
-                tag_upper in cb_tags_upper
-                or "ELECTIVE" in tag_upper
-                or tag_upper in ("MDM", "OE", "OPEN_ELECTIVE")
-            )
-
-            if is_elective_tag:
-                # Critical edge case check: if only 1 subject offered in this semester
-                if len(distinct_codes) == 1 and len(distinct_subtags) <= 1:
-                    s = subjs[0]
-                    in_class_electives.append({
-                        "tag": s.subject_tag,
-                        "subject_code": s.subject_code,
-                        "subject_name": s.subject_name,
-                        "type": s.type,
-                        "weekly_hours": s.weekly_hours,
-                        "is_dispersal": False,
-                        "note": "Single subject offered: all students take it together; taught in-class within regular division (no dispersal)."
-                    })
-                else:
-                    dispersal_electives.append({
-                        "tag": subjs[0].subject_tag,
-                        "subjects": [
-                            {
-                                "subject_code": s.subject_code,
-                                "subject_name": s.subject_name,
-                                "type": s.type,
-                                "subtag": s.subtag,
-                                "weekly_hours": s.weekly_hours,
-                            }
-                            for s in subjs
-                        ],
-                        "is_dispersal": True,
-                        "note": f"{len(distinct_codes)} subjects offered: students disperse into synchronized elective rooms."
-                    })
-            else:
-                for s in subjs:
-                    core_subjects.append({
-                        "subject_code": s.subject_code,
-                        "subject_name": s.subject_name,
-                        "subject_tag": s.subject_tag,
-                        "type": s.type,
-                        "weekly_hours": s.weekly_hours,
-                    })
-
-        return {
-            "semester": semester,
-            "total_students": len(sem_students),
-            "has_pe": has_pe,
-            "pe_tag": pe_tag_candidate,
-            "clusters": clusters,
-            "dispersal_electives": dispersal_electives,
-            "in_class_electives": in_class_electives,
-            "core_subjects": core_subjects,
-        }
 
 
 # ── Store access ──────────────────────────────────────────────────────────

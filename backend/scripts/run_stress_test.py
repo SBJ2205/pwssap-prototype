@@ -137,6 +137,7 @@ def seed_student_preferences(store):
     print(" [3/5] Simulating 100% student preferences for all 466 students...")
     all_slots = [s for s in build_canonical_grid() if is_slot_usable(s)]
     slot_keys = [s.key for s in all_slots]
+    ratable_keys = slot_keys
     morning_slots = [k for k in slot_keys if k.endswith("-1") or k.endswith("-2")]
     afternoon_slots = [k for k in slot_keys if k.endswith("-3") or k.endswith("-4")]
     friday_slots = [k for k in slot_keys if k.startswith("Fri-")]

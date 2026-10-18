@@ -90,6 +90,15 @@ class SolverInput:
     candidate_count: int = 1
     random_seed: int = 42
     cancel_check: Optional[Callable[[], bool]] = None
+    # Optional inputs used only by Traditional (division/batch) mode. When left
+    # at their defaults the solver behaves exactly as before.
+    #   batch_division_map: (semester, batch index) -> division index. Replaces
+    #     the equal-batches-per-division heuristic for the batch/division rules.
+    #   sync_section_groups: groups of section ids whose meetings must sit in
+    #     identical slots (meeting i of every section in a group coincides).
+    batch_division_map: Optional[Dict[Tuple[int, int], int]] = None
+    sync_section_groups: Optional[List[List[int]]] = None
+    pinned_student_sections: Optional[Dict[str, Dict[str, int]]] = None
 
 
 @dataclass
@@ -111,6 +120,20 @@ class SolverResult:
     # timetable; and whether that count is the proven minimum for it.
     blocked_placements: Optional[int] = None
     blocked_minimum_proven: Optional[bool] = None
+
+
+def _batch_division(
+    inp: SolverInput, sem: int, batch_idx: int, num_divs: int, num_batches: int
+) -> int:
+    """Parent division index of a lab batch.
+
+    Uses the explicit map when one is supplied for this batch, otherwise the
+    original heuristic that assumes every division has the same batch count."""
+    if inp.batch_division_map is not None:
+        explicit = inp.batch_division_map.get((sem, batch_idx))
+        if explicit is not None:
+            return explicit
+    return min(num_divs, max(1, 1 + (batch_idx - 1) * num_divs // num_batches))
 
 
 def _solve_cancellable(solver: cp_model.CpSolver, model: cp_model.CpModel, cancel_check) -> int:
@@ -453,7 +476,7 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
             num_divs = max(sem_divs)
             num_batches = max(sem_batches)
             for b in sem_batches:
-                div_k = min(num_divs, max(1, 1 + (b - 1) * num_divs // num_batches))
+                div_k = _batch_division(inp, sem, b, num_divs, num_batches)
                 t_meets = core_theory_tracks.get((sem, div_k), [])
                 l_meets = lab_batches.get((sem, b), [])
                 if t_meets and l_meets:
@@ -538,7 +561,7 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
                 n_d = max(stag_divs)
                 n_b = max(stag_batches)
                 for b in stag_batches:
-                    mapped_div = min(n_d, max(1, 1 + (b - 1) * n_d // n_b))
+                    mapped_div = _batch_division(inp, sem, b, n_d, n_b)
                     e_th = elective_theory_by_subtag.get((sem, stag, mapped_div), [])
                     e_lb = elective_lab_by_subtag.get((sem, stag, b), [])
                     if e_th and e_lb:
@@ -557,7 +580,7 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
             num_divs = max(sem_divs)
             num_batches = max(sem_batches)
             for b in sem_batches:
-                div_k = min(num_divs, max(1, 1 + (b - 1) * num_divs // num_batches))
+                div_k = _batch_division(inp, sem, b, num_divs, num_batches)
                 common_labs = [
                     m for m in lab_batches.get((sem, b), [])
                     if not inp.subject_subtags.get(section_by_id[m[0]].subject_code)
@@ -643,6 +666,38 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
                             for ot in other_terms:
                                 m1.add(ot + cd_act <= 1)
 
+    # Constraint 6: Synchronised section groups (Traditional dispersal electives).
+    # Meeting i of every section in a group must occupy the same slot/hour.
+    for group in inp.sync_section_groups or []:
+        lead = section_by_id.get(group[0]) if group else None
+        if lead is None:
+            continue
+        for other_id in group[1:]:
+            other = section_by_id.get(other_id)
+            if other is None or len(other.meetings) != len(lead.meetings):
+                continue
+            for mi in range(len(lead.meetings)):
+                if (getattr(lead.meetings[mi], "duration_hours", 2) or 2) != (
+                    getattr(other.meetings[mi], "duration_hours", 2) or 2
+                ):
+                    continue
+                for sk in all_slot_keys:
+                    for part in (1, 2):
+                        lead_var = (
+                            period_active.get((lead.id, mi, slot_indices[lead.id][sk], part))
+                            if sk in slot_indices[lead.id] else None
+                        )
+                        other_var = (
+                            period_active.get((other.id, mi, slot_indices[other.id][sk], part))
+                            if sk in slot_indices[other.id] else None
+                        )
+                        if lead_var is not None and other_var is not None:
+                            m1.add(lead_var == other_var)
+                        elif lead_var is not None:
+                            m1.add(lead_var == 0)
+                        elif other_var is not None:
+                            m1.add(other_var == 0)
+
     # Stage 1 Objective: Faculty teaching load balance + Cohort slot preferences (Student-aware Master TT)
     stage1_obj_terms: List[cp_model.LinearExpr] = []
 
@@ -677,7 +732,13 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
         for section in sections:
             sid = section.id
             sub_code = section.subject_code
-            studs = inp.subject_students.get(sub_code, [])
+            if inp.pinned_student_sections is not None:
+                studs = [
+                    roll for roll, m in inp.pinned_student_sections.items()
+                    if m.get(sub_code) == sid
+                ]
+            else:
+                studs = inp.subject_students.get(sub_code, [])
             if not studs:
                 continue
             cand_s = inp.candidate_slots.get(sid, [])
@@ -815,6 +876,39 @@ def _stage1(inp: SolverInput, seed: int, solve_seconds: float) -> Tuple[Optional
     ), None
 
 
+def _score_pinned_assignments(
+    inp: SolverInput,
+    assigned_meetings: Dict[int, List[Meeting]],
+    assigned_teachers: Dict[int, Optional[str]],
+) -> Tuple[int, int, List[Tuple[str, str, str]]]:
+    """Score the pinned student roster against a master timetable layout.
+
+    Returns (blocked_violations_count, total_penalty, violations_list).
+    """
+    if not inp.pinned_student_sections:
+        return 0, 0, []
+    total_penalty = 0
+    blocked_violations: List[Tuple[str, str, str]] = []
+    blocked_value = PreferenceRating.BLOCKED.value
+    for roll, sub_map in inp.pinned_student_sections.items():
+        time_pref = inp.time_preferences.get(roll, {})
+        fac_pref = inp.faculty_preferences.get(roll, {})
+        for sub_code, sid in sub_map.items():
+            for m in assigned_meetings.get(sid, []):
+                rating = time_pref.get(m.slot_key)
+                if rating == blocked_value:
+                    blocked_violations.append((roll, sub_code, m.slot_key))
+                    total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY[blocked_value]
+                elif rating is not None:
+                    total_penalty += _TIME_WEIGHT * _TIME_PREF_PENALTY.get(rating, _DEFAULT_TIME_PENALTY)
+            teacher_id = assigned_teachers.get(sid)
+            if teacher_id:
+                f_rating = fac_pref.get(sub_code, {}).get(teacher_id)
+                if f_rating is not None and f_rating != _DEFAULT_FACULTY_PENALTY:
+                    total_penalty += _FACULTY_WEIGHT * _FACULTY_PREF_PENALTY.get(f_rating, _DEFAULT_FACULTY_PENALTY)
+    return len(blocked_violations), total_penalty, blocked_violations
+
+
 def _stage2(
     inp: SolverInput,
     seed: int,
@@ -837,6 +931,21 @@ def _stage2(
     total_t0 = time.monotonic()
     effective_time_limit = float(budget)
     stage1_elapsed = 0.0
+
+    if score_only and inp.pinned_student_sections is not None:
+        blocked_cnt, total_pen, _ = _score_pinned_assignments(
+            inp, assigned_meetings, assigned_teachers
+        )
+        return SolverResult(
+            status="SCORED",
+            wall_time_seconds=round(time.monotonic() - total_t0, 3),
+            num_conflicts=int(s1.num_conflicts),
+            stage1_status=status1_str,
+            stage2_status="SCORED",
+            blocked_placements=blocked_cnt,
+            blocked_minimum_proven=True,
+            objective_value=total_pen,
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2: Automated Student Section Allocation
@@ -982,7 +1091,7 @@ def _stage2(
     blocked_minimum_proven: Optional[bool] = None
     solver2: cp_model.CpSolver
 
-    if inp.feasibility_only or not (blocked_terms or other_terms):
+    if inp.feasibility_only or inp.pinned_student_sections is not None or not (blocked_terms or other_terms):
         solver2 = _new_solver(rem_time, first_solution=True)
         status2 = _solve_cancellable(solver2, m2, inp.cancel_check)
         if status2 in (cp_model.OPTIMAL, cp_model.FEASIBLE) and not inp.feasibility_only:
@@ -1119,7 +1228,22 @@ def _stage2(
     # Score the assignment actually being delivered (after gap reduction).
     # This is computed from the assignment itself - never read back from a
     # solver whose objective may not have been the one that produced it.
-    if not inp.feasibility_only and res.status in ("OPTIMAL", "FEASIBLE"):
+    if inp.pinned_student_sections is not None and res.status in ("OPTIMAL", "FEASIBLE"):
+        res.student_section_assignments = {roll: dict(m) for roll, m in inp.pinned_student_sections.items()}
+        blocked_cnt, total_pen, blocked_violations = _score_pinned_assignments(
+            inp, assigned_meetings, assigned_teachers
+        )
+        res.objective_value = total_pen
+        res.blocked_placements = blocked_cnt
+        res.blocked_minimum_proven = True
+        if blocked_violations:
+            examples = ", ".join(f"{roll} ({sub} @ {sk})" for roll, sub, sk in blocked_violations[:5])
+            more = f" and {len(blocked_violations) - 5} more" if len(blocked_violations) > 5 else ""
+            res.warnings.append(
+                f"Traditional timetable: {blocked_cnt} student placement(s) in blocked slots across "
+                f"{len(inp.pinned_student_sections)} pinned students: {examples}{more}."
+            )
+    elif not inp.feasibility_only and res.status in ("OPTIMAL", "FEASIBLE"):
         total_penalty = 0
         blocked_violations: List[Tuple[str, str, str]] = []
         section_load: Dict[int, int] = defaultdict(int)
@@ -1282,11 +1406,12 @@ def _solve_portfolio(inp: SolverInput) -> SolverResult:
         if score.status == "SCORED":
             built.append((idx + 1, seed, s1, score))
             if score.blocked_placements == 0 and score.blocked_minimum_proven:
-                notes.append(
-                    f"Candidate #{idx + 1} places nobody in a blocked slot (proven), so no further candidates "
-                    "were built; the saved time went to optimising it."
-                )
-                break
+                if inp.pinned_student_sections is None:
+                    notes.append(
+                        f"Candidate #{idx + 1} places nobody in a blocked slot (proven), so no further candidates "
+                        "were built; the saved time went to optimising it."
+                    )
+                    break
 
     if cancelled():
         return SolverResult(
@@ -1311,7 +1436,12 @@ def _solve_portfolio(inp: SolverInput) -> SolverResult:
         )
 
     best_id, best_seed, best_s1, best_score = min(
-        built, key=lambda b: (b[3].blocked_placements, b[0])
+        built,
+        key=lambda b: (
+            b[3].blocked_placements if b[3].blocked_placements is not None else 999999,
+            b[3].objective_value if b[3].objective_value is not None else 999999,
+            b[0],
+        ),
     )
     remaining = max(5.0, total - (time.monotonic() - t_start))
     final_t0 = time.monotonic()
@@ -1337,8 +1467,8 @@ def _solve_portfolio(inp: SolverInput) -> SolverResult:
     minima = ", ".join(f"#{cid}: {sc.blocked_placements}" for cid, _s, _t, sc in built)
     final.warnings.append(
         f"Multi-candidate search: built and scored {len(built)} master timetable(s) on blocked-slot placements "
-        f"(minimum found per candidate - {minima}); selected Candidate #{best_id} and spent the remaining "
-        f"{remaining:.0f}s fully optimising it. Other candidates were scored only, not fully optimised."
+        f"(minimum found per candidate - {minima}); selected Candidate #{best_id} and optimised it in "
+        f"{final_seconds:.1f}s (budget was {remaining:.0f}s). Other candidates were scored only, not fully optimised."
     )
     final.warnings.extend(notes)
     return final

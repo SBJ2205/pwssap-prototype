@@ -166,6 +166,42 @@ npm run build
 
 ---
 
+## 🏫 Traditional Division & Batch Mode (optional)
+
+An alternative to the preference-weighted flow: fixed **divisions** (Div A, B, ...) for theory and fixed
+**lab batches** (A1..A3, ...) for labs. The preference-weighted solver stays the core product; traditional
+mode only layers on top of it and does nothing for runs that were not generated in it.
+
+**Flow** (admin, *Classes & Batches* page): set divisions and batches for each semester of the run, move
+students between divisions, *Save & generate sections*, then use the normal **Solver** page and press Run.
+
+**How it relates to runs and preference mode**
+
+- It is **per run**. A run is either traditional or standard; generating sections either way replaces the
+  run's previous sections (and, as in standard generation, every other run's), so the last generation wins.
+  If standard generation replaces a traditional run's sections, the traditional plan retires itself and the
+  run behaves as a normal preference-weighted run. Do not press the Solver page's own *Generate Sections*
+  on a traditional run unless you want that.
+- Every semester of the run needs a saved setup before generating.
+- Student time preferences are used only as the existing soft signal when building the master timetable.
+  Student allocation ignores them: students are **pinned** to the sections of their saved division/batch.
+- Pins are applied only after a successful solve (an unsolved run shows no student timetables). The solver
+  hook then re-validates the result; on any violation the run is left *Solved*, not *Published*, and the
+  violations are returned in the solve warnings and `GET /admin/cohorts/validation`.
+- Electives are classified by catalog *shape*, not name. A choice-based tag with >= 2 subtags and at least
+  one lab is a **track** (e.g. Sem 6 PE: divisions form inside each track). A choice-based tag with >= 2
+  subtags whose subjects are all theory is a **dispersal** elective (e.g. Sem 4 MDM): one section per
+  subject, all at identical times, clear of core classes. A choice tag with a single offering, and any
+  non-choice subject (including labs such as `MDM03` and `OEC14`), is taught in-class.
+- Section labels follow the engine's conventions: `{code}-T{k}` per division, `{code}-L{b}` per batch.
+
+**Engine/solver touch points** (all additive, inert for other runs and covered by
+`tests/test_engine_traditional_hooks.py`): `SolverInput.batch_division_map` (explicit batch -> division),
+`SolverInput.sync_section_groups` (dispersal synchronisation), and two hook calls in `solver/service.py`.
+
+**Try it on the real data:** `python scripts/run_traditional_probe.py --time-limit 120`. Opt-in end-to-end
+test: `set RUN_SLOW=1` then `pytest tests/test_traditional_full_department.py -q`.
+
 ## 📄 License
 
 Internal Department Prototype — Academic Year 2026–27.

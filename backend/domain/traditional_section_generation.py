@@ -1,226 +1,308 @@
-"""Traditional Division & Batch Section Generation.
+"""Traditional Division & Batch section generation.
 
-Generates Section records and deterministic student-to-section enrollments
-for traditional academic cohorts.
+Generates the sections of one run from the saved division/batch setup of each of
+its semesters, and records a TraditionalPlan (see domain.traditional_plan).
 
-Key rules:
-- Theory subjects for Division k get label "{code}-T{k}", enforcing non-overlap
-  across core theory subjects within Division k (CP-SAT Constraint 2).
-- Lab subjects for Batch b get label "{code}-L{b}", enforcing non-overlap
-  for that lab batch and non-overlap with its parent division (CP-SAT Constraints 1 & 3).
-- In-Class Electives (e.g. Sem 6 MDM with only 1 subject) are treated as in-class
-  division subjects: label "{code}-T{k}", 0 dispersal across divisions.
-- Dispersal Electives (e.g. Sem 4 MDM with >= 2 subjects) get synchronized sections
-  across all divisions.
+Conventions shared with the solver engine (it parses labels with regexes):
+
+- Theory for division k is labelled ``{code}-T{k}``; lab for batch b ``{code}-L{b}``.
+  k counts the semester's divisions in saved order. b counts its lab batches
+  across all divisions in saved order.
+- The batch -> division relationship is passed to the solver explicitly (the
+  engine's own heuristic only works when every division has the same number of
+  batches).
+- Dispersal electives (a choice tag whose subjects are all theory with >= 2
+  subtags) get ONE section per subject, labelled ``{code}-T1`` so the engine keeps
+  them clear of core classes, and are registered as a synchronisation group so
+  they run at identical times.
+
+Student memberships are *not* written to the live assignments here. They are kept
+in the plan and applied only after a successful solve, so an unsolved run never
+leaks placeholder timetables.
 """
-import math
-from typing import Dict, List, Optional, Set
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from data.store import InMemoryStore
-from domain.models import Meeting, Section, Subject
-from domain.timeslots import is_slot_usable
-
-
-def _build_meetings_template(weekly_hours: int, slot_structure: Optional[str] = None) -> List[Meeting]:
-    """Create meeting templates with empty slot_key, to be scheduled by Stage 1 solver."""
-    if weekly_hours <= 1:
-        return [Meeting(slot_key="", duration_hours=1, slot_part=1)]
-    elif weekly_hours == 2:
-        return [Meeting(slot_key="", duration_hours=2, slot_part=None)]
-    elif weekly_hours == 3:
-        # Standard Mumbai University 3-hr theory: 2hr block + 1hr block
-        return [
-            Meeting(slot_key="", duration_hours=2, slot_part=None),
-            Meeting(slot_key="", duration_hours=1, slot_part=1),
-        ]
-    elif weekly_hours == 4:
-        # Two 2-hr blocks
-        return [
-            Meeting(slot_key="", duration_hours=2, slot_part=None),
-            Meeting(slot_key="", duration_hours=2, slot_part=None),
-        ]
-    else:
-        num_2s = weekly_hours // 2
-        rem = weekly_hours % 2
-        meets = [Meeting(slot_key="", duration_hours=2, slot_part=None) for _ in range(num_2s)]
-        if rem:
-            meets.append(Meeting(slot_key="", duration_hours=1, slot_part=1))
-        return meets
+from domain.cohorts import (
+    CohortConfigError,
+    SemesterCohortConfig,
+    classify_semester,
+    enrolled_codes,
+    is_lab,
+    roster_mismatch,
+    semester_students,
+)
+from domain.enums import RunStatus
+from domain.models import Meeting, Section
+from domain.section_generation import SlotStructureError, parse_slot_structure
+from domain.traditional_plan import (
+    BATCH_LAB,
+    DIVISION_THEORY,
+    DISPERSAL,
+    SectionInfo,
+    StudentUnit,
+    TraditionalPlan,
+)
 
 
-def generate_traditional_sections_for_semester(
-    store: InMemoryStore,
-    semester: int,
-    run_id: Optional[int] = None,
-) -> dict:
-    """Generate traditional sections and assign students deterministically."""
-    cohort_config = store.get_semester_cohorts(semester)
-    if not cohort_config or not cohort_config.classes:
-        raise ValueError(f"No cohort configuration found for semester {semester}.")
+def _meeting_template(subject: Any) -> List[Meeting]:
+    """Unscheduled meetings (slot_key blank) for the solver to place."""
+    try:
+        hours = parse_slot_structure(subject.slot_structure, subject.weekly_hours)
+    except SlotStructureError:
+        hours = [2] * (subject.weekly_hours // 2) + ([1] if subject.weekly_hours % 2 else [])
+    if not hours:
+        hours = [max(1, min(subject.weekly_hours, 2))]
+    return [
+        Meeting(slot_key="", duration_hours=h, slot_part=1 if h == 1 else None)
+        for h in hours
+    ]
 
-    cluster_info = store.detect_pe_clusters(semester)
-    all_sem_subjects = store.list_subjects(semester=semester)
 
-    # Differentiate subject categories
-    in_class_codes = {item["subject_code"] for item in cluster_info.get("in_class_electives", [])}
-    dispersal_codes = {
-        s["subject_code"]
-        for group in cluster_info.get("dispersal_electives", [])
-        for s in group.get("subjects", [])
-    }
-    pe_tag = cluster_info.get("pe_tag")
+@dataclass
+class _Pending:
+    section: Section
+    info: SectionInfo
+    rolls: List[str]
+    durations: Tuple[int, ...] = ()
 
-    core_theories: List[Subject] = []
-    core_labs: List[Subject] = []
-    in_class_theories: List[Subject] = []
 
-    for s in all_sem_subjects:
-        code = s.subject_code
-        tag_up = (s.subject_tag or "").strip().upper()
+@dataclass
+class _SemesterBuild:
+    pending: List[_Pending] = field(default_factory=list)
+    units: Dict[str, StudentUnit] = field(default_factory=dict)
+    batch_division_map: Dict[Tuple[int, int], int] = field(default_factory=dict)
+    division_names: Dict[Tuple[int, int], str] = field(default_factory=dict)
+    batch_names: Dict[Tuple[int, int], str] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+    sync_pending: List[List[_Pending]] = field(default_factory=list)
 
-        if code in in_class_codes:
-            if s.type == "theory":
-                in_class_theories.append(s)
-            else:
-                core_labs.append(s)
-        elif code in dispersal_codes:
-            pass  # Handled in dispersal block
-        elif pe_tag and tag_up == pe_tag:
-            pass  # Handled per class based on PE track
-        else:
-            if s.type == "theory":
-                core_theories.append(s)
-            else:
-                core_labs.append(s)
 
-    created_sections: List[Section] = []
-    global_batch_counter = 1
+def _placeholder_teacher(store: Any, subject_code: str) -> Optional[str]:
+    capable = store.teachers_for_subject(subject_code)
+    return capable[0] if capable else None
 
-    # Keep track of teacher workload to distribute evenly
-    teacher_loads: Dict[str, int] = {}
 
-    def pick_teacher(subject_code: str) -> Optional[str]:
-        eligible = store.teachers_for_subject(subject_code)
-        if not eligible:
-            return None
-        # Pick teacher with minimum assigned sections
-        eligible.sort(key=lambda t: (teacher_loads.get(t, 0), t))
-        chosen = eligible[0]
-        teacher_loads[chosen] = teacher_loads.get(chosen, 0) + 1
-        return chosen
+def _build_semester(store: Any, semester: int, config: SemesterCohortConfig) -> _SemesterBuild:
+    structure = classify_semester(store, semester)
+    if structure.unsupported_track_tags:
+        raise CohortConfigError([
+            f"Semester {semester} has several track elective tags "
+            f"({structure.track_tag}, {', '.join(structure.unsupported_track_tags)}); only one is supported."
+        ])
 
-    # 1. Division & Batch Sections
-    for div_idx, cls in enumerate(cohort_config.classes, start=1):
-        div_rolls = cls.student_rolls
-        div_capacity = max(len(div_rolls), 1)
+    out = _SemesterBuild()
+    students = semester_students(store, semester)
+    enrolled: Dict[str, Set[str]] = {s.roll_number: enrolled_codes(store, s.roll_number) for s in students}
 
-        # 1a. Core Theories & In-Class Electives (e.g. Sem 6 MDM)
-        for subj in (core_theories + in_class_theories):
-            label = f"{subj.subject_code}-T{div_idx}"
-            sec = Section(
-                id=None,
-                subject_code=subj.subject_code,
-                label=label,
-                teacher_id=pick_teacher(subj.subject_code),
-                capacity=div_capacity,
-                meetings=_build_meetings_template(subj.weekly_hours, subj.slot_structure),
-                run_id=run_id,
-            )
-            saved_sec = store.add_section(sec)
-            created_sections.append(saved_sec)
-            for r in div_rolls:
-                store.student_section_assignments.setdefault(r, {})[subj.subject_code] = saved_sec.id
-
-        # 1b. PE Theory for this division (if class has PE track)
-        if cls.pe_subject_code:
-            pe_subj = store.get_subject(cls.pe_subject_code)
-            if pe_subj and pe_subj.type == "theory":
-                label = f"{pe_subj.subject_code}-T{div_idx}"
-                sec = Section(
-                    id=None,
-                    subject_code=pe_subj.subject_code,
-                    label=label,
-                    teacher_id=pick_teacher(pe_subj.subject_code),
-                    capacity=div_capacity,
-                    meetings=_build_meetings_template(pe_subj.weekly_hours, pe_subj.slot_structure),
-                    run_id=run_id,
-                )
-                saved_sec = store.add_section(sec)
-                created_sections.append(saved_sec)
-                for r in div_rolls:
-                    store.student_section_assignments.setdefault(r, {})[pe_subj.subject_code] = saved_sec.id
-
-        # 1c. Core Labs for Batches
+    # Division / batch indices exactly as the solver will see them.
+    divisions: List[Tuple[int, Any, List[Tuple[int, Any]]]] = []
+    batch_counter = 0
+    for k, cls in enumerate(config.classes, start=1):
+        out.division_names[(semester, k)] = cls.class_id
+        batch_list = []
         for batch in cls.batches:
-            b_idx = global_batch_counter
-            global_batch_counter += 1
-            batch_rolls = batch.student_rolls
-            batch_capacity = max(len(batch_rolls), 1)
-
-            for lab_subj in core_labs:
-                label = f"{lab_subj.subject_code}-L{b_idx}"
-                sec = Section(
-                    id=None,
-                    subject_code=lab_subj.subject_code,
-                    label=label,
-                    teacher_id=pick_teacher(lab_subj.subject_code),
-                    capacity=batch_capacity,
-                    meetings=_build_meetings_template(lab_subj.weekly_hours, lab_subj.slot_structure),
-                    run_id=run_id,
+            batch_counter += 1
+            out.batch_division_map[(semester, batch_counter)] = k
+            out.batch_names[(semester, batch_counter)] = batch.batch_id
+            batch_list.append((batch_counter, batch))
+            for roll in batch.student_rolls:
+                out.units[roll] = StudentUnit(
+                    semester=semester, class_id=cls.class_id, division=k,
+                    batch_id=batch.batch_id, batch=batch_counter,
                 )
-                saved_sec = store.add_section(sec)
-                created_sections.append(saved_sec)
-                for r in batch_rolls:
-                    store.student_section_assignments.setdefault(r, {})[lab_subj.subject_code] = saved_sec.id
+        divisions.append((k, cls, batch_list))
 
-    # 2. Dispersal Electives (e.g. Sem 4 MDM with multiple subjects)
-    for group in cluster_info.get("dispersal_electives", []):
-        tag = group.get("tag")
-        for subj_info in group.get("subjects", []):
-            code = subj_info["subject_code"]
-            subj = store.get_subject(code)
-            if not subj:
+    dispersal_codes = structure.dispersal_codes
+
+    for subject in store.list_subjects(semester=semester):
+        code = subject.subject_code
+        if code in dispersal_codes:
+            continue
+        if not store.teachers_for_subject(code):
+            out.warnings.append(f"{code} has no capable teacher.")
+
+        if not is_lab(subject):
+            for k, cls, _ in divisions:
+                rolls = [r for r in cls.student_rolls if code in enrolled.get(r, ())]
+                if rolls:
+                    meetings = _meeting_template(subject)
+                    out.pending.append(_Pending(
+                        section=Section(
+                            id=None, subject_code=code, label=f"{code}-T{k}",
+                            teacher_id=_placeholder_teacher(store, code),
+                            capacity=len(rolls), meetings=meetings,
+                        ),
+                        info=SectionInfo(
+                            section_id=-1, semester=semester, subject_code=code,
+                            label=f"{code}-T{k}", kind=DIVISION_THEORY,
+                            division=k, class_id=cls.class_id,
+                        ),
+                        rolls=rolls,
+                    ))
+        else:
+            for k, cls, batch_list in divisions:
+                for b, batch in batch_list:
+                    rolls = [r for r in batch.student_rolls if code in enrolled.get(r, ())]
+                    if rolls:
+                        meetings = _meeting_template(subject)
+                        out.pending.append(_Pending(
+                            section=Section(
+                                id=None, subject_code=code, label=f"{code}-L{b}",
+                                teacher_id=_placeholder_teacher(store, code),
+                                capacity=len(rolls), meetings=meetings,
+                            ),
+                            info=SectionInfo(
+                                section_id=-1, semester=semester, subject_code=code,
+                                label=f"{code}-L{b}", kind=BATCH_LAB,
+                                division=k, batch=b, class_id=cls.class_id, batch_id=batch.batch_id,
+                            ),
+                            rolls=rolls,
+                        ))
+
+    for tag, group in structure.dispersal_groups:
+        built: List[_Pending] = []
+        for subject in group:
+            code = subject.subject_code
+            rolls = [s.roll_number for s in students if code in enrolled[s.roll_number]]
+            if not rolls:
+                out.warnings.append(f"Nobody chose {code} ({tag}); no section generated for it.")
                 continue
+            if not store.teachers_for_subject(code):
+                out.warnings.append(f"{code} has no capable teacher.")
+            if len(rolls) > subject.capacity:
+                out.warnings.append(
+                    f"{code} has {len(rolls)} students for a capacity of {subject.capacity}."
+                )
+            meetings = _meeting_template(subject)
+            built.append(_Pending(
+                section=Section(
+                    id=None, subject_code=code, label=f"{code}-T1",
+                    teacher_id=_placeholder_teacher(store, code),
+                    capacity=len(rolls), meetings=meetings,
+                ),
+                info=SectionInfo(
+                    section_id=-1, semester=semester, subject_code=code,
+                    label=f"{code}-T1", kind=DISPERSAL,
+                ),
+                rolls=rolls,
+                durations=tuple(m.duration_hours for m in meetings),
+            ))
+        out.pending.extend(built)
 
-            # Find all students who locked into this elective
-            enrolled_rolls = []
-            for r, choices in store.student_choice_selections.items():
-                st = store.get_student(r)
-                if not st or st.semester != semester:
-                    continue
-                for c in choices:
-                    if c.tag.strip().upper() == tag.strip().upper():
-                        if subj.supports_subtag(c.subtag) or c.subtag == code:
-                            enrolled_rolls.append(r)
-                            break
-
-            if not enrolled_rolls:
-                continue
-
-            label = f"{subj.subject_code}-E1"
-            sec = Section(
-                id=None,
-                subject_code=subj.subject_code,
-                label=label,
-                teacher_id=pick_teacher(subj.subject_code),
-                capacity=len(enrolled_rolls),
-                meetings=_build_meetings_template(subj.weekly_hours, subj.slot_structure),
-                run_id=run_id,
+        by_structure: Dict[Tuple[int, ...], List[_Pending]] = {}
+        for item in built:
+            by_structure.setdefault(item.durations, []).append(item)
+        if len(by_structure) > 1:
+            out.warnings.append(
+                f"Dispersal electives of tag {tag} have different weekly structures; only electives "
+                "with identical structures can be synchronised, the rest are scheduled independently."
             )
-            saved_sec = store.add_section(sec)
-            created_sections.append(saved_sec)
-            for r in enrolled_rolls:
-                store.student_section_assignments.setdefault(r, {})[subj.subject_code] = saved_sec.id
+        for members in by_structure.values():
+            if len(members) >= 2:
+                out.sync_pending.append(members)
 
-    assigned_count = sum(
-        1 for r, subjs in store.student_section_assignments.items()
-        if store.get_student(r) and store.get_student(r).semester == semester
-    )
+    for tag in sorted(store.get_choice_based_tags_for_semester(semester)):
+        missing = sum(
+            1 for s in students
+            if not str(store.get_lock_in_for_student(s.roll_number).get(tag, "")).strip()
+        )
+        if missing:
+            out.warnings.append(
+                f"{missing} student(s) have no '{tag}' choice locked in and get no section for it."
+            )
+    return out
+
+
+def generate_traditional_sections(store: Any, run_id: int) -> dict:
+    """Generate traditional sections for every semester of a run.
+
+    Idempotent: previously generated sections are cleared first, mirroring
+    POST /admin/runs/{id}/generate-sections (which also clears every other run's
+    sections, because student assignments are department-wide). Everything is
+    validated and built in memory first, so a failure leaves the store untouched.
+    """
+    run = store.get_run(run_id)
+    if run is None:
+        raise LookupError(f"Run {run_id} does not exist.")
+    semesters = list(run.semesters or [run.semester])
+
+    missing = [s for s in semesters if s not in store.cohort_configs]
+    if missing:
+        raise CohortConfigError([
+            f"Save the division setup for semester(s) {', '.join(map(str, missing))} first "
+            f"(run #{run_id} covers semesters {', '.join(map(str, semesters))})."
+        ])
+    errors: List[str] = []
+    for sem in semesters:
+        for problem in roster_mismatch(store, store.cohort_configs[sem]):
+            errors.append(f"Semester {sem}: {problem}. Re-save the divisions.")
+    if errors:
+        raise CohortConfigError(errors)
+
+    builds = {sem: _build_semester(store, sem, store.cohort_configs[sem]) for sem in semesters}
+
+    # ── Commit: clear the old state exactly like standard generation ──────
+    cleared = store.clear_sections_for_run(run_id)
+    store.traditional_plans.pop(run_id, None)
+    for other in store.list_runs():
+        if other.id != run_id and store.clear_sections_for_run(other.id):
+            other.status = RunStatus.DRAFT
+            store.latest_solve_results.pop(other.id, None)
+            store.traditional_plans.pop(other.id, None)
+    run.status = RunStatus.DRAFT
+    store.latest_solve_results.pop(run_id, None)
+
+    plan = TraditionalPlan(run_id=run_id, semesters=semesters)
+    saved: List[Section] = []
+    for sem in semesters:
+        build = builds[sem]
+        plan.warnings.extend(f"Semester {sem}: {w}" for w in build.warnings)
+        plan.student_units.update(build.units)
+        plan.batch_division_map.update(build.batch_division_map)
+        plan.division_names.update(build.division_names)
+        plan.batch_names.update(build.batch_names)
+        plan.config_snapshot[sem] = store.cohort_configs[sem].to_dict()
+
+        for item in build.pending:
+            item.section.run_id = run_id
+            section = store.add_section(item.section)
+            item.info.section_id = section.id
+            plan.sections[section.id] = item.info
+            saved.append(section)
+            for roll in item.rolls:
+                plan.pins.setdefault(roll, {})[section.subject_code] = section.id
+        for members in build.sync_pending:
+            plan.sync_groups.append([m.info.section_id for m in members])
+
+    for sem in semesters:
+        for student in store.list_students(semester=sem):
+            expected = enrolled_codes(store, student.roll_number)
+            have = set(plan.pins.get(student.roll_number, {}))
+            lacking = sorted(expected - have)
+            if lacking:
+                plan.warnings.append(
+                    f"Student {student.roll_number} has no section for {', '.join(lacking)}."
+                )
+
+    store.traditional_plans[run_id] = plan
 
     return {
-        "status": "ok",
-        "semester": semester,
-        "sections_created": len(created_sections),
-        "students_assigned": assigned_count,
-        "classes_count": len(cohort_config.classes),
+        "run_id": run_id,
+        "mode": "traditional",
+        "cleared_count": cleared,
+        "generated_count": len(saved),
+        "students_pinned": len(plan.pins),
+        "synchronised_groups": len(plan.sync_groups),
+        "sections": [
+            {
+                "id": s.id,
+                "subject_code": s.subject_code,
+                "label": s.label,
+                "capacity": s.capacity,
+                "kind": plan.sections[s.id].kind,
+            }
+            for s in saved
+        ],
+        "warnings": list(plan.warnings),
     }
