@@ -81,6 +81,7 @@ class InMemoryStore:
         #   traditional_plans: run_id -> TraditionalPlan (pins, sync groups, batch map)
         self.cohort_configs: Dict[int, Any] = {}
         self.traditional_plans: Dict[int, Any] = {}
+        self.active_run_id: Optional[int] = None
         # At most one solve (or feasibility check) may run at a time: the
         # store is a single shared timetable and the solver is CPU-bound.
         self._solve_lock = threading.Lock()

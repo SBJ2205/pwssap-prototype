@@ -131,6 +131,11 @@ def solve_run(
 
     # Cache for UI persistence across page switches
     store.latest_solve_results[run_id] = resp
+    try:
+        from domain.saved_runs import save_run_snapshot
+        save_run_snapshot(store, run_id)
+    except Exception:
+        pass
     return resp
 
 

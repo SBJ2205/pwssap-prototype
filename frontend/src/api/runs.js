@@ -89,3 +89,20 @@ export const downloadTeacherTimetableCsv = (teacherId, runId) => {
     responseType: "blob",
   }).then(r => r.data);
 };
+
+// ── Saved Timetables & Comparison ─────────────────────────────────────────
+export const listSavedRuns = () =>
+  client.get("/admin/runs/saved").then(r => r.data);
+
+export const saveRunSnapshot = (runId, label) =>
+  client.post(`/admin/runs/${runId}/save-snapshot`, { label }).then(r => r.data);
+
+export const activateSavedRun = (snapshotId) =>
+  client.post(`/admin/runs/saved/${snapshotId}/activate`).then(r => r.data);
+
+export const compareRuns = (runA, runB) =>
+  client.get("/admin/runs/compare", { params: { run_a: runA, run_b: runB } }).then(r => r.data);
+
+export const deleteSavedRun = (snapshotId) =>
+  client.delete(`/admin/runs/saved/${snapshotId}`).then(r => r.data);
+

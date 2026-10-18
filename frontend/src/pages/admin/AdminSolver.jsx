@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { checkFeasibility, generateSections, runSolve, getSections, getSolveResult, cancelSolve, getSolveStatus } from "../../api/runs";
+import {
+  checkFeasibility,
+  generateSections,
+  runSolve,
+  getSections,
+  getSolveResult,
+  cancelSolve,
+  getSolveStatus,
+  listSavedRuns,
+  saveRunSnapshot,
+  activateSavedRun,
+  compareRuns,
+  deleteSavedRun,
+} from "../../api/runs";
 import { getSubjects, getStudents, getTeachers } from "../../api/catalog";
 import { initializeCycle } from "../../api/cycle";
 import { apiErrorMessage } from "../../api/client";
@@ -56,6 +69,104 @@ export default function AdminSolver({
   const [feasibilityResult, setFeasibilityResult] = useState(null);
 
   const abortControllerRef = useRef(null);
+
+  // Saved Run Snapshots & Comparison State
+  const [savedSnapshots, setSavedSnapshots] = useState([]);
+  const [loadingSnapshots, setLoadingSnapshots] = useState(false);
+  const [snapshotActionMsg, setSnapshotActionMsg] = useState(null);
+  const [selectedRunA, setSelectedRunA] = useState("");
+  const [selectedRunB, setSelectedRunB] = useState("");
+  const [comparisonResult, setComparisonResult] = useState(null);
+  const [comparing, setComparing] = useState(false);
+  const [customLabel, setCustomLabel] = useState("");
+  const [savingSnapshot, setSavingSnapshot] = useState(false);
+
+  const fetchSnapshots = useCallback(async () => {
+    try {
+      setLoadingSnapshots(true);
+      const res = await listSavedRuns();
+      const list = res?.snapshots || [];
+      setSavedSnapshots(list);
+      if (list.length >= 2) {
+        setSelectedRunA((prev) => prev || list[1]?.snapshot_id || list[0]?.snapshot_id || "");
+        setSelectedRunB((prev) => prev || list[0]?.snapshot_id || "");
+      } else if (list.length === 1) {
+        setSelectedRunA((prev) => prev || list[0]?.snapshot_id || "");
+      }
+    } catch (e) {
+      console.warn("Failed fetching saved runs", e);
+    } finally {
+      setLoadingSnapshots(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSnapshots();
+  }, [fetchSnapshots]);
+
+  const handleSaveSnapshot = async () => {
+    const runIdToUse = internalRunId != null ? internalRunId : (currentRunId != null ? currentRunId : activeRunId);
+    if (!runIdToUse) return;
+    try {
+      setSavingSnapshot(true);
+      await saveRunSnapshot(Number(runIdToUse), customLabel.trim() || undefined);
+      setCustomLabel("");
+      setSnapshotActionMsg({ type: "success", text: "Timetable run snapshot saved to disk!" });
+      fetchSnapshots();
+    } catch (e) {
+      setSnapshotActionMsg({ type: "error", text: apiErrorMessage(e, "Failed to save snapshot.") });
+    } finally {
+      setSavingSnapshot(false);
+    }
+  };
+
+  const handleActivateSnapshot = async (snapshotId) => {
+    try {
+      const res = await activateSavedRun(snapshotId);
+      setSnapshotActionMsg({ type: "success", text: `✓ Activated "${res.label || snapshotId}" as the live timetable!` });
+      if (setActiveRunId) setActiveRunId(res.active_run_id);
+      if (setInternalRunId) setInternalRunId(res.active_run_id);
+      if (refreshCycle) refreshCycle();
+      try {
+        const diag = await getSolveResult(res.active_run_id);
+        setSolveResult(diag);
+      } catch (err) {}
+      fetchSnapshots();
+    } catch (e) {
+      setSnapshotActionMsg({ type: "error", text: apiErrorMessage(e, "Failed to activate timetable.") });
+    }
+  };
+
+  const handleDeleteSnapshot = async (snapshotId) => {
+    if (!window.confirm(`Delete saved snapshot "${snapshotId}"?`)) return;
+    try {
+      await deleteSavedRun(snapshotId);
+      setSnapshotActionMsg({ type: "info", text: "Snapshot deleted." });
+      if (comparisonResult && (selectedRunA === snapshotId || selectedRunB === snapshotId)) {
+        setComparisonResult(null);
+      }
+      fetchSnapshots();
+    } catch (e) {
+      setSnapshotActionMsg({ type: "error", text: apiErrorMessage(e, "Failed to delete snapshot.") });
+    }
+  };
+
+  const handleCompare = async () => {
+    if (!selectedRunA || !selectedRunB) {
+      setSnapshotActionMsg({ type: "error", text: "Please select both Run A and Run B to compare." });
+      return;
+    }
+    try {
+      setComparing(true);
+      const res = await compareRuns(selectedRunA, selectedRunB);
+      setComparisonResult(res);
+    } catch (e) {
+      setSnapshotActionMsg({ type: "error", text: apiErrorMessage(e, "Comparison failed.") });
+    } finally {
+      setComparing(false);
+    }
+  };
+
 
   // A solve started elsewhere (another tab, or before this page was reloaded).
   // The backend allows only one at a time, so reattach to it instead of racing it.
@@ -241,6 +352,7 @@ export default function AdminSolver({
         sessionStorage.setItem(`${SOLVE_STORAGE_KEY_PREFIX}${runIdToUse}`, JSON.stringify(res));
       } catch (e) {}
       if (refreshCycle) refreshCycle();
+      fetchSnapshots();
     } catch (err) {
       clearInterval(timer);
       if (err?.name === "CanceledError" || err?.name === "AbortError") {
@@ -785,21 +897,43 @@ export default function AdminSolver({
               </div>
 
               {setPage && (solveResult.status === "OPTIMAL" || solveResult.status === "FEASIBLE") && (
-                <button
-                  onClick={() => setPage("admin-timetable")}
-                  style={{
-                    padding: "7px 16px",
-                    background: "#185FA5",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
-                >
-                  View Published Timetable →
-                </button>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button
+                    onClick={handleSaveSnapshot}
+                    disabled={savingSnapshot}
+                    style={{
+                      padding: "7px 14px",
+                      background: "#fff",
+                      color: "#0f766e",
+                      border: "1.5px solid #0f766e",
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                    title="Persist this run's assignments and diagnostics as a saved snapshot"
+                  >
+                    {savingSnapshot ? "Saving..." : "💾 Save Snapshot"}
+                  </button>
+                  <button
+                    onClick={() => setPage("admin-timetable")}
+                    style={{
+                      padding: "7px 16px",
+                      background: "#185FA5",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    View Published Timetable →
+                  </button>
+                </div>
               )}
             </div>
 
@@ -912,6 +1046,404 @@ export default function AdminSolver({
             )}
           </div>
         )}
+      </Card>
+
+      {/* Saved Runs & Multi-Cycle Comparison Card */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "#0f172a", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>📁 Saved Timetable Runs & Academic Cycle Archive</span>
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+              Persist solved timetables to disk across Traditional (Cohort) vs. PWSSAP Elective modes and multiple semester cycles (e.g. Even [4, 6, 8] vs. Odd [3, 5, 7]). You can activate any saved run as the live published timetable or generate a side-by-side faculty comparison report.
+            </div>
+          </div>
+          <button
+            onClick={fetchSnapshots}
+            disabled={loadingSnapshots}
+            style={{
+              padding: "6px 12px",
+              background: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            {loadingSnapshots ? "Refreshing…" : "↻ Refresh Archive"}
+          </button>
+        </div>
+
+        {/* Snapshot Action Message */}
+        {snapshotActionMsg && (
+          <div
+            style={{
+              background: snapshotActionMsg.type === "error" ? "#fef2f2" : "#f0fdf4",
+              border: `1px solid ${snapshotActionMsg.type === "error" ? "#fecaca" : "#bbf7d0"}`,
+              borderRadius: 6,
+              padding: "8px 12px",
+              fontSize: 12,
+              color: snapshotActionMsg.type === "error" ? "#991b1b" : "#166534",
+              marginBottom: 14,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>{snapshotActionMsg.text}</span>
+            <button
+              onClick={() => setSnapshotActionMsg(null)}
+              style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 14, color: "inherit" }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Quick Save Current Run Bar */}
+        <div
+          style={{
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: 8,
+            padding: "12px 14px",
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>
+            Save Current Timetable:
+          </span>
+          <input
+            type="text"
+            placeholder="Custom label (e.g. Even Sem 2026 - Elective Optimized)"
+            value={customLabel}
+            onChange={(e) => setCustomLabel(e.target.value)}
+            style={{
+              flex: 1,
+              minWidth: 240,
+              padding: "6px 10px",
+              border: "1px solid #cbd5e1",
+              borderRadius: 6,
+              fontSize: 12,
+            }}
+          />
+          <button
+            onClick={handleSaveSnapshot}
+            disabled={savingSnapshot || (!currentRunId && !activeRunId)}
+            style={{
+              padding: "6px 14px",
+              background: savingSnapshot || (!currentRunId && !activeRunId) ? "#cbd5e1" : "#0f766e",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: savingSnapshot || (!currentRunId && !activeRunId) ? "not-allowed" : "pointer",
+            }}
+          >
+            {savingSnapshot ? "Saving…" : "💾 Save Snapshot"}
+          </button>
+        </div>
+
+        {/* Table of Saved Runs */}
+        <div style={{ overflowX: "auto", marginBottom: 20 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "#f1f5f9", textAlign: "left", color: "#475569" }}>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Run Label</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Mode</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Semesters</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Sections / Students</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Blocked Slots</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Status / Score</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Saved At</th>
+                <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {savedSnapshots.length === 0 ? (
+                <tr>
+                  <td colSpan={8} style={{ padding: "20px", textAlign: "center", color: "#94a3b8" }}>
+                    No saved snapshots yet. After running the solver or traditional baseline, click "Save Snapshot" to archive it.
+                  </td>
+                </tr>
+              ) : (
+                savedSnapshots.map((s) => {
+                  const isActive = (currentRunId != null && s.run_id === Number(currentRunId)) || (activeRunId != null && s.run_id === Number(activeRunId));
+                  const isElective = s.mode === "pwssap_elective" || s.mode === "elective";
+                  return (
+                    <tr
+                      key={s.snapshot_id}
+                      style={{
+                        background: isActive ? "#f0fdf4" : "#fff",
+                        borderBottom: "1px solid #f1f5f9",
+                      }}
+                    >
+                      <td style={{ padding: "8px 10px", fontWeight: 600, color: "#1e293b" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span>{s.label}</span>
+                          {isActive && (
+                            <span style={{
+                              background: "#dcfce7",
+                              color: "#166534",
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                            }}>
+                              ACTIVE LIVE
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{s.snapshot_id}</div>
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{
+                          background: isElective ? "#e0f2fe" : "#fef3c7",
+                          color: isElective ? "#0369a1" : "#92400e",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                        }}>
+                          {isElective ? "⚡ PWSSAP Elective" : "🏛 Traditional Cohort"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "8px 10px", color: "#334155" }}>
+                        {s.semesters?.length ? `Sem ${s.semesters.join(", ")}` : "All"}
+                      </td>
+                      <td style={{ padding: "8px 10px", color: "#475569" }}>
+                        {s.section_count} sections · {s.student_count} students
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{
+                          fontWeight: 700,
+                          color: s.metrics?.blocked_placements === 0 ? "#16a34a" : (s.metrics?.blocked_placements > 0 ? "#dc2626" : "#64748b"),
+                        }}>
+                          {s.metrics?.blocked_placements ?? "—"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{
+                          color: s.metrics?.status === "OPTIMAL" ? "#166534" : (s.metrics?.status === "FEASIBLE" ? "#854d0e" : "#475569"),
+                          fontWeight: 600,
+                        }}>
+                          {s.metrics?.status || "DONE"}
+                        </span>
+                        {s.metrics?.objective_value != null && (
+                          <span style={{ fontSize: 11, color: "#64748b", marginLeft: 4 }}>
+                            (pen: {s.metrics.objective_value})
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px 10px", color: "#64748b", fontSize: 11 }}>
+                        {s.created_at ? new Date(s.created_at).toLocaleString() : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                        <div style={{ display: "inline-flex", gap: 6 }}>
+                          {!isActive && (
+                            <button
+                              onClick={() => handleActivateSnapshot(s.snapshot_id)}
+                              style={{
+                                padding: "4px 8px",
+                                background: "#0284c7",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: 4,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                cursor: "pointer",
+                              }}
+                              title="Set this saved timetable as the active published timetable"
+                            >
+                              Activate
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleDeleteSnapshot(s.snapshot_id)}
+                            style={{
+                              padding: "4px 8px",
+                              background: "#fee2e2",
+                              color: "#991b1b",
+                              border: "none",
+                              borderRadius: 4,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                            title="Delete this snapshot file from disk"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Side-by-Side Comparison Section */}
+        <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#1e293b", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+            <span>⚖️ Side-by-Side Faculty Comparison Matrix</span>
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+            Select any two saved timetable runs (for example: Traditional Cohort vs. PWSSAP Elective, or Multi-Candidate runs) to review improvements for faculty presentation.
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>Baseline (Run A):</span>
+              <select
+                value={selectedRunA}
+                onChange={(e) => setSelectedRunA(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12, background: "#fff" }}
+              >
+                <option value="">-- Select Run A --</option>
+                {savedSnapshots.map((s) => (
+                  <option key={s.snapshot_id} value={s.snapshot_id}>
+                    {s.label} ({s.mode === "traditional_plan" ? "Traditional" : "PWSSAP"})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>Candidate (Run B):</span>
+              <select
+                value={selectedRunB}
+                onChange={(e) => setSelectedRunB(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12, background: "#fff" }}
+              >
+                <option value="">-- Select Run B --</option>
+                {savedSnapshots.map((s) => (
+                  <option key={s.snapshot_id} value={s.snapshot_id}>
+                    {s.label} ({s.mode === "traditional_plan" ? "Traditional" : "PWSSAP"})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              onClick={handleCompare}
+              disabled={comparing || !selectedRunA || !selectedRunB}
+              style={{
+                padding: "6px 16px",
+                background: comparing || !selectedRunA || !selectedRunB ? "#cbd5e1" : "#4338ca",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: comparing || !selectedRunA || !selectedRunB ? "not-allowed" : "pointer",
+              }}
+            >
+              {comparing ? "Comparing…" : "Compare Runs"}
+            </button>
+          </div>
+
+          {/* Comparison Result Display */}
+          {comparisonResult && (
+            <div style={{ background: "#f8fafc", border: "1.5px solid #cbd5e1", borderRadius: 8, padding: "14px 16px" }}>
+              {/* Takeaway Highlight Box */}
+              <div style={{
+                background: "#f0fdf4",
+                border: "1px solid #86efac",
+                borderRadius: 6,
+                padding: "10px 14px",
+                color: "#166534",
+                fontSize: 13,
+                fontWeight: 600,
+                marginBottom: 14,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}>
+                <span>💡 Faculty Review Takeaway:</span>
+                <span>{comparisonResult.takeaway}</span>
+              </div>
+
+              {/* Comparison Matrix Table */}
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "#e2e8f0", textAlign: "left", color: "#334155" }}>
+                    <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Metric / Dimension</th>
+                    <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>
+                      Run A: {comparisonResult.run_a?.label}
+                    </th>
+                    <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>
+                      Run B: {comparisonResult.run_b?.label}
+                    </th>
+                    <th style={{ padding: "8px 10px", borderBottom: "1px solid #cbd5e1" }}>Delta / Impact</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>Scheduling Paradigm</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_a?.mode === "traditional_plan" ? "Traditional Cohort" : "PWSSAP Elective"}</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_b?.mode === "traditional_plan" ? "Traditional Cohort" : "PWSSAP Elective"}</td>
+                    <td style={{ padding: "8px 10px", color: "#64748b" }}>—</td>
+                  </tr>
+                  <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>Semesters Covered</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_a?.semesters?.join(", ") || "All"}</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_b?.semesters?.join(", ") || "All"}</td>
+                    <td style={{ padding: "8px 10px", color: "#64748b" }}>—</td>
+                  </tr>
+                  <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>Blocked Student Slots</td>
+                    <td style={{ padding: "8px 10px", color: comparisonResult.run_a?.blocked_placements > 0 ? "#dc2626" : "#16a34a", fontWeight: 700 }}>
+                      {comparisonResult.run_a?.blocked_placements ?? "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", color: comparisonResult.run_b?.blocked_placements > 0 ? "#dc2626" : "#16a34a", fontWeight: 700 }}>
+                      {comparisonResult.run_b?.blocked_placements ?? "—"}
+                    </td>
+                    <td style={{ padding: "8px 10px", fontWeight: 700 }}>
+                      {comparisonResult.deltas?.blocked_improvement_pct != null ? (
+                        <span style={{ color: comparisonResult.deltas.blocked_improvement_pct > 0 ? "#16a34a" : "#dc2626" }}>
+                          {comparisonResult.deltas.blocked_improvement_pct > 0 ? `▼ ${comparisonResult.deltas.blocked_improvement_pct}% reduction` : `▲ ${Math.abs(comparisonResult.deltas.blocked_improvement_pct)}% increase`}
+                        </span>
+                      ) : "Identical"}
+                    </td>
+                  </tr>
+                  <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>Objective Penalty Score</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_a?.objective_value ?? "—"}</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_b?.objective_value ?? "—"}</td>
+                    <td style={{ padding: "8px 10px", fontWeight: 700 }}>
+                      {comparisonResult.deltas?.penalty_improvement_pct != null ? (
+                        <span style={{ color: comparisonResult.deltas.penalty_improvement_pct > 0 ? "#16a34a" : "#dc2626" }}>
+                          {comparisonResult.deltas.penalty_improvement_pct > 0 ? `▼ ${comparisonResult.deltas.penalty_improvement_pct}% penalty reduction` : `▲ ${Math.abs(comparisonResult.deltas.penalty_improvement_pct)}% penalty increase`}
+                        </span>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                  <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>Solve Time (Wall Clock)</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_a?.wall_time_seconds != null ? `${Number(comparisonResult.run_a.wall_time_seconds).toFixed(1)}s` : "—"}</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_b?.wall_time_seconds != null ? `${Number(comparisonResult.run_b.wall_time_seconds).toFixed(1)}s` : "—"}</td>
+                    <td style={{ padding: "8px 10px", color: "#64748b" }}>—</td>
+                  </tr>
+                  <tr>
+                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>Students Enrolled</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_a?.total_students ?? "—"}</td>
+                    <td style={{ padding: "8px 10px" }}>{comparisonResult.run_b?.total_students ?? "—"}</td>
+                    <td style={{ padding: "8px 10px", color: "#64748b" }}>—</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </Card>
     </div>
   );
