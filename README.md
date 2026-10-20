@@ -2,10 +2,7 @@
 
 **P**reference-**W**eighted **S**tudent-**S**ection **A**llocation **P**rototype
 
-PWSSAP builds a whole department's weekly timetable **and** assigns every student to a section in one
-optimisation, using Google OR-Tools **CP-SAT**. Teacher availability, clash-freedom, capacity and teacher
-load caps are **hard** rules; students' time-slot and faculty preferences are optimised as far as is
-mathematically possible, and the system tells you honestly how far that is.
+PWSSAP generates a whole department's **semester master timetable** (the recurring weekly schedule across all departmental semesters for the entire academic term) **and** assigns every student to a section in one optimisation, using Google OR-Tools **CP-SAT**. Teacher availability, clash-freedom, capacity and teacher load caps are **hard** rules; students' time-slot and faculty preferences are optimised as far as is mathematically possible, and the system tells you honestly how far that is.
 
 | | |
 |---|---|
@@ -38,16 +35,18 @@ mathematically possible, and the system tells you honestly how far that is.
 ## What it does
 
 - **Data in:** subjects, teachers (with the subjects they can teach and weekly-hour caps), students and
-  elective allocations, all from CSV with row-level validation (all-or-nothing imports).
-- **Students:** lock in electives, rate the 19 usable weekly slots (Preferred / Tolerable / Disliked / Blocked)
+  elective allocations, all from CSV with row-level validation (all-or-nothing imports). Supports multi-semester
+  department scopes simultaneously (e.g. Even Semesters 4 & 6).
+- **Students:** lock in electives, rate the 19 usable timetable slots (Preferred / Tolerable / Disliked / Blocked)
   within a **course-load-based blocked quota**, and optionally rank faculty.
-- **Admins:** mark teacher unavailability, generate sections, run the solver (with feasibility check, multi-candidate
-  search, stop button), review the published timetable, make post-publication touch-ups, and save/compare solved runs.
-- **Output:** a clash-free master timetable and a section for every student, with:
+- **Admins:** mark teacher unavailability, generate sections (preference-weighted or division/batch), run the solver
+  (with feasibility check, multi-candidate search, stop button), review the published semester timetable, make
+  post-publication touch-ups/overrides, and save/compare solved runs.
+- **Output:** a clash-free semester master timetable and a section for every student, with:
   - a student view showing a **satisfaction score**, cohort average, preference breakdown, and a clear notice if a
     blocked slot was unavoidable;
-  - a teacher view with weekly timetable and printable/exportable **class rosters**;
-  - an admin view with weekly matrix, section list, and teacher workload.
+  - a teacher view with their semester schedule and printable/exportable **class rosters**;
+  - an admin view with the department master schedule matrix, section list, and teacher workload.
 - **Honest diagnostics:** per-stage solver status, blocked-slot count with *proven-minimum* flag, candidate leaderboard,
   gap-reduction statistics, and readable warnings.
 
@@ -66,8 +65,8 @@ CSV + preferences ──► Stage 1: master timetable (slots + teachers, CP-SAT)
 **Hard constraints:** teacher availability · teacher and student no-clash (per half-slot) · section capacity ·
 teacher-per-subject weekly load caps · slot legality (no theory in slot 4, nothing in Mon-1) · meeting spacing rules ·
 division/batch non-overlap.
-**Soft objectives:** student time preferences (a blocked slot costs 2,000 points) · faculty preferences (lower weight) ·
-section-size balance · teacher load balance.
+**Soft objectives:** student time preferences (lexicographically prioritizing blocked-slot minimization in Pass A before
+optimizing tolerable/preferred in Pass B) · faculty preferences (lower weight) · section-size balance · teacher load balance.
 
 **Why "blocked" is minimised rather than absolute.** Making every student's blocked slot a hard rule is infeasible on real
 data (one 56-student elective's blocks covered all 14 theory-legal slots). PWSSAP therefore uses three layers: a
@@ -88,6 +87,7 @@ time budget), then fully optimises only the best one. The time limit is a **shar
 | Students | Placed by the optimiser | **Pinned** to their saved division/batch |
 | Electives | Section per demand, solver-placed | Track electives (e.g. Sem 6 PE) form divisions *inside* each track; dispersal electives (e.g. Sem 4 MDM) run at identical times |
 | Safety net | Hard constraints in the model | Independent **validator** re-checks the final timetable; failures leave the run *Solved*, not *Published* |
+| Generation Route | `POST /admin/runs/{id}/generate-sections` | `POST /admin/cohorts/generate-sections` |
 | Where | Admin → Solver | Admin → Classes & Batches, then Solver |
 
 Traditional mode is **per run**: a run is either traditional or standard, and generating sections either way replaces the
@@ -122,9 +122,8 @@ npm run dev                      # http://localhost:5173
 # 3) Load the demo dataset through the real API (third terminal, from the repo root)
 backend\venv\Scripts\python.exe backend\scripts\seed_via_api.py
 ```
-`demo_run/` (the sample CSVs) is **git-ignored**; obtain it from the team. The seeder imports subjects, teachers, students and
-elective allocations, sets teacher availability, and generates 100 % synthetic student time/faculty preferences (about 20–35 s;
-re-runnable).
+`demo_run/` (the sample CSVs) contains subjects, teachers, students, and elective allocations across Semesters 4 and 6. The seeder
+imports the catalog, sets teacher availability, and generates synthetic student time/faculty preferences (about 20–35 s; re-runnable).
 
 Open <http://localhost:5173> and enter **`admin`**, a **student roll number**, or a **teacher ID** (no password — local prototype).
 
@@ -147,8 +146,8 @@ seeder; on the full dataset use a time limit of **≥ 180 s** (1 candidate) or *
 6. **Classes & Batches** — Traditional mode setup, move students between divisions, 2–6 lab batches, generate sections.
 7. **Solver** — generate sections, set time limit and candidates, *Check Feasibility*, *Run*, *Stop*; read the result card,
    candidate leaderboard and warnings; save, activate and **compare** solved runs side by side.
-8. **Published Timetable** — weekly matrix, section list, teacher workload.
-9. **Touch-ups** — enrol/unenrol a student, reassign a teacher, override a section's capacity (warnings, session audit log).
+8. **Published Timetable** — master schedule matrix, section list, teacher workload.
+9. **Touch-ups (Overrides)** — enrol/unenrol a student, reassign a teacher, override a section's capacity (with live clash/capacity checks and session audit log).
 
 ### Student
 **Elective Lock-in → Time Preferences** (click cycles Indifferent → Preferred → Tolerable → Disliked → Blocked; a live quota counter
@@ -156,18 +155,18 @@ stops over-blocking) **→ Faculty Preferences → My Timetable** (satisfaction 
 browser's print dialog, CSV export).
 
 ### Teacher
-**My Timetable & Rosters** — weekly grid, per-section rosters with search, printable roster (optional attendance columns), CSV exports.
+**My Timetable & Rosters** — semester schedule grid, per-section rosters with search, printable roster (optional attendance columns), CSV exports.
 
 ---
 
 ## Data files (CSV)
 
-| File | Columns |
-|---|---|
-| `subjects.csv` | `subject_code, subject_name, subject_tag, [subtag], semester, type(theory\|lab), weekly_hours, capacity, [slot_structure]` — subtags may be shared as `AIML\|DS`; `slot_structure` examples: `2+1`, `2+2` |
-| `teachers.csv` | `teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, …` — each load is a hard weekly-hours cap |
-| `students.csv` | `roll_number, name, semester` |
-| `semN_electives.csv` | `roll_number, [student_name], <one column per choice tag, e.g. MDM or PE>` — lines starting with `#` are ignored |
+| File | Columns | Notes |
+|---|---|---|
+| `subjects.csv` | `subject_code, subject_name, subject_tag, [subtag], semester, type(theory\|lab), weekly_hours, capacity, [slot_structure]` | Subtags may be shared as `AIML\|DS`; `slot_structure` examples: `2+1`, `2+2`. Accepts aliases: `name`, `tag`, `hours`, `linked_pattern`. |
+| `teachers.csv` | `teacher_id, teacher_name, subject_1, [subject_1_load], subject_2, [subject_2_load], …` | Supports paired load caps (`subject_1_load`) or variable-width ragged subject lists without loads. |
+| `students.csv` | `roll_number, name, semester` | Standard student roster. |
+| `semN_electives.csv` | `roll_number, [student_name], <one column per choice tag, e.g. MDM or PE>` | Lines starting with `#` are ignored; accepts aliases for roll number (`roll_no`, `rollno`, `roll`). |
 
 Import order: **subjects → teachers → students → elective allocations**. Imports are all-or-nothing and report row-level errors.
 
@@ -183,7 +182,7 @@ Import order: **subjects → teachers → students → elective allocations**. I
 
 ## Results
 
-Measured 2026-10-18 on one Windows machine (Python 3.12, OR-Tools 9.15), full demo dataset, synthetic adversarial student
+Measured 2026-10-18 on one Windows machine (Python 3.12, OR-Tools 9.15), full demo dataset (Semesters 4 & 6), synthetic adversarial student
 preferences; CP-SAT under a time limit varies slightly between runs. Reproduce with the commands shown.
 
 | Run | Command | Outcome |
@@ -239,16 +238,20 @@ pwssap-prototype/
 │   └── tests/                   pytest suite
 ├── frontend/
 │   └── src/                     App.jsx, constants.js, api/ (Axios clients), components/, pages/{admin,student,teacher}
-├── demo_run/                    sample CSVs (git-ignored)
+├── demo_run/                    sample CSVs across active semesters (Sem 4 & Sem 6)
 ├── context.md                   full project context for documentation
 └── README.md
 ```
 
 ## API
 
-68 endpoints (49 admin-only, 19 public) — browse them interactively at **<http://localhost:8000/docs>**. Admin routes require the
-header `X-Role: admin`. Key flows: `POST /admin/cycle/initialize` → `POST /admin/runs/{id}/generate-sections` →
-`POST /admin/runs/{id}/solve?time_limit=&candidates=` → `GET /admin/runs/{id}/summary`. Full table: [`context.md` §10](context.md).
+68 application endpoints (49 admin-only, 19 public; 72 total HTTP routes including Swagger UI / OpenAPI docs) — browse them
+interactively at **<http://localhost:8000/docs>**. Admin routes require the header `X-Role: admin`.
+
+**Key solver workflows:**
+- **Preference-Weighted Mode:** `POST /admin/cycle/initialize` → `POST /admin/runs/{id}/generate-sections` → `POST /admin/runs/{id}/solve?time_limit=&candidates=` → `GET /admin/runs/{id}/summary`
+- **Traditional Division & Batch Mode:** `POST /admin/cohorts/save` → `POST /admin/cohorts/generate-sections` → `POST /admin/runs/{id}/solve` → `GET /admin/cohorts/validation`
+Full table: [`context.md` §10](context.md).
 
 ## Known limitations
 
