@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getStudents, getTeachers, getStudentLockIn } from "./api/catalog";
 import { listRuns } from "./api/runs";
 import { getCycleStatus } from "./api/cycle";
-import { setRole as setApiRole } from "./api/client";
+import { setToken as setApiToken } from "./api/client";
 import Sidebar from "./components/Sidebar";
 import { ErrorState, LoadingState } from "./components/ui";
 import EntryScreen from "./pages/EntryScreen";
@@ -63,7 +63,20 @@ const SESSION_KEY = "pwssap_session";
 function loadSession() {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const session = raw ? JSON.parse(raw) : null;
+    if (!session?.access_token) return null;
+    const encodedPayload = session.access_token.split(".")[1]
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const paddedPayload = encodedPayload.padEnd(Math.ceil(encodedPayload.length / 4) * 4, "=");
+    const tokenPayload = JSON.parse(atob(paddedPayload));
+    if (
+      typeof tokenPayload.exp !== "number"
+      || tokenPayload.exp <= Math.floor(Date.now() / 1000)
+      || tokenPayload.role !== session.role
+      || tokenPayload.sub !== session.identity
+    ) return null;
+    return session;
   } catch {
     return null;
   }
@@ -75,7 +88,7 @@ function saveSession(session) {
 }
 
 export default function App() {
-  // session: { role: "admin"|"student"|"teacher", identity: string }
+  // session: { role, identity, access_token, name }
   // identity = "admin", roll_number, or teacher_id
   const [session, setSession] = useState(() => loadSession());
   const [page, setPage] = useState(() => {
@@ -91,11 +104,10 @@ export default function App() {
   const [catalogError, setCatalogError] = useState(null);
   const [reloadTick, setReloadTick] = useState(0);
 
-  // Sync the X-Role header whenever the session changes.
+  // Keep the bearer token synchronized with the persisted session.
   useEffect(() => {
-    if (session) setApiRole(session.role);
-    else setApiRole("student"); // safe default
-  }, [session]);
+    setApiToken(session?.access_token || null);
+  }, [session?.access_token]);
 
   // Runs & Cycle state for admin context.
   const [runs, setRuns] = useState([]);
@@ -152,57 +164,32 @@ export default function App() {
     setCatalogLoading(true);
     setCatalogError(null);
 
-    const promises = [
-      getStudents().catch(() => []),
-      getTeachers().catch(() => []),
-    ];
     if (session.role === "admin") {
-      promises.push(listRuns().catch(() => []));
-      promises.push(getCycleStatus().catch(() => null));
-    }
-
-    Promise.all(promises)
-      .then(([s, t, r, cyc]) => {
+      Promise.all([
+        getStudents().catch(() => []),
+        getTeachers().catch(() => []),
+        listRuns().catch(() => []),
+        getCycleStatus().catch(() => null),
+      ]).then(([s, t, r, cyc]) => {
         if (cancelled) return;
         setStudents(s);
         setTeachers(t);
-        if (r) setRuns(r);
-        if (cyc) {
-          setCycleStatus(cyc);
-          if (cyc.current_run?.id != null) {
-            setActiveRunIdState(cyc.current_run.id);
-            localStorage.setItem("pwssap_active_run_id", String(cyc.current_run.id));
-          }
+        setRuns(r || []);
+        if (cyc) setCycleStatus(cyc);
+        if (cyc?.current_run?.id != null) {
+          setActiveRunIdState(cyc.current_run.id);
+          localStorage.setItem("pwssap_active_run_id", String(cyc.current_run.id));
         }
-
-        // Auto-resolve session.name if missing (e.g., from existing localStorage or reload)
-        setSession(prev => {
-          if (!prev) return prev;
-          if (prev.name) return prev;
-          let resolvedName = null;
-          if (prev.role === "admin") {
-            resolvedName = "Administrator";
-          } else if (prev.role === "student" && s) {
-            const match = s.find(st => st.roll_number?.toLowerCase() === prev.identity?.toLowerCase());
-            if (match) resolvedName = match.name;
-          } else if (prev.role === "teacher" && t) {
-            const match = t.find(tch => tch.teacher_id?.toLowerCase() === prev.identity?.toLowerCase());
-            if (match) resolvedName = match.teacher_name;
-          }
-          if (resolvedName && resolvedName !== prev.name) {
-            const updated = { ...prev, name: resolvedName };
-            saveSession(updated);
-            return updated;
-          }
-          return prev;
-        });
-      })
-      .catch(e => {
+      }).catch(e => {
         if (!cancelled) setCatalogError(e.message || "Failed to load catalog.");
-      })
-      .finally(() => {
+      }).finally(() => {
         if (!cancelled) setCatalogLoading(false);
       });
+    } else {
+      setStudents([]);
+      setTeachers([]);
+      setCatalogLoading(false);
+    }
 
     return () => { cancelled = true; };
   }, [session, reloadTick]);
@@ -214,10 +201,10 @@ export default function App() {
     }
   }, [session, refreshCycle]);
 
-  async function login(role, identity, name = null) {
-    let resolvedName = name;
-    if (!resolvedName && role === "admin") resolvedName = "Administrator";
-    const s = { role, identity, name: resolvedName };
+  async function login(auth) {
+    const { role, identity, name, access_token: accessToken } = auth;
+    setApiToken(accessToken);
+    const s = { role, identity, name, access_token: accessToken };
     saveSession(s);
     setSession(s);
     if (role === "student") {
@@ -237,6 +224,7 @@ export default function App() {
   }
 
   function logout() {
+    setApiToken(null);
     saveSession(null);
     setSession(null);
     setPage(null);
@@ -246,6 +234,12 @@ export default function App() {
     setCycleStatus(null);
     // Keep activeRunIdState preserved across identity switches so the department timetable remains active
   }
+
+  useEffect(() => {
+    const onUnauthorized = () => logout();
+    window.addEventListener("pwssap:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("pwssap:unauthorized", onUnauthorized);
+  }, []);
 
   // Not logged in → show entry screen.
   if (!session) {
@@ -267,7 +261,8 @@ export default function App() {
   );
   const activeRun = runs.find(r => r.id === effectiveActiveRunId) || (runs.length > 0 ? runs[runs.length - 1] : null);
 
-  const PageComponent = PAGE_COMPONENTS[page] || null;
+  const rolePrefix = session.role === "admin" ? "admin-" : `${session.role}-`;
+  const PageComponent = page?.startsWith(rolePrefix) ? PAGE_COMPONENTS[page] || null : null;
 
   // Shared props passed to every page.
   const sharedProps = {

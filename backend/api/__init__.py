@@ -2,6 +2,7 @@
 from fastapi import APIRouter
 
 from api import (
+    auth,
     availability,
     cohorts,
     cycle,
@@ -18,6 +19,7 @@ from api import (
 )
 
 ALL_ROUTERS = [
+    auth.router,
     meta.router,
     cycle.router,
     cohorts.router,

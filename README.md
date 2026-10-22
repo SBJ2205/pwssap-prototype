@@ -21,14 +21,15 @@ PWSSAP generates a whole department's **semester master timetable** (the recurri
 2. [How the solver works](#how-the-solver-works)
 3. [Two scheduling modes](#two-scheduling-modes)
 4. [Quick start](#quick-start)
-5. [Using the app](#using-the-app)
-6. [Data files (CSV)](#data-files-csv)
-7. [Timetable rules](#timetable-rules)
-8. [Results](#results)
-9. [Testing](#testing)
-10. [Project structure](#project-structure)
-11. [API](#api)
-12. [Known limitations](#known-limitations)
+5. [Authentication](#authentication)
+6. [Using the app](#using-the-app)
+7. [Data files (CSV)](#data-files-csv)
+8. [Timetable rules](#timetable-rules)
+9. [Results](#results)
+10. [Testing](#testing)
+11. [Project structure](#project-structure)
+12. [API](#api)
+13. [Known limitations](#known-limitations)
 
 ---
 
@@ -101,14 +102,32 @@ Details: [`context.md` §8](context.md).
 
 **Prerequisites:** Python 3.11+ (3.12 tested), Node.js 18+, npm.
 
-```bash
-# 1) Backend
+```powershell
 cd backend
 python -m venv venv
-venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
+venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn main:app --port 8000     # API docs: http://localhost:8000/docs
-```
+
+# Generate secrets
+# Required
+$env:JWT_SECRET = (python -c "import secrets; print(secrets.token_urlsafe(48))")
+# Opitonal
+$env:ADMIN_SETUP_TOKEN = (python -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# View tokens
+echo $env:JWT_SECRET
+echo $env:ADMIN_SETUP_TOKEN
+
+# Start backend
+uvicorn main:app --port 8000
+# API docs: http://localhost:8000/docs
+
+# Remove tokens from current terminal
+Remove-Item Env:JWT_SECRET
+Remove-Item Env:ADMIN_SETUP_TOKEN
+``` 
+
+**Note:** Keep `JWT_SECRET` unchanged across restarts, or existing JWTs may become invalid. Store it securely rather than generating a new one each time.
 > Do **not** add `--reload` while working with loaded data: the store is in memory, and a reload wipes it.
 
 ```bash
@@ -125,13 +144,48 @@ backend\venv\Scripts\python.exe backend\scripts\seed_via_api.py
 `demo_run/` (the sample CSVs) contains subjects, teachers, students, and elective allocations across Semesters 4 and 6. The seeder
 imports the catalog, sets teacher availability, and generates synthetic student time/faculty preferences (about 20–35 s; re-runnable).
 
-Open <http://localhost:5173> and enter **`admin`**, a **student roll number**, or a **teacher ID** (no password — local prototype).
+Open <http://localhost:5173> and sign in with the role, account ID, and password. The initial Admin login is
+**`admin` / `admin`** unless configured otherwise; Student and Teacher credentials are set by roster imports.
 
 **Frontend config:** the API base URL defaults to `http://localhost:8000`; override with `VITE_API_URL` (see
 `frontend/.env.example`). The Vite dev server also proxies API paths to port 8000.
 
 **Troubleshooting:** from Python clients use `127.0.0.1` (not `localhost`); a backend restart empties the store, so re-run the
 seeder; on the full dataset use a time limit of **≥ 180 s** (1 candidate) or **≥ 240–300 s** (3 candidates).
+
+---
+
+## Authentication
+
+Admin, Student, and Teacher sign-in uses the account role, account ID, and password. The initial Admin account is
+`admin` / `admin`, unless `ADMIN_DEFAULT_PASSWORD` is set before the Admin credential is first created. Student and
+Teacher accounts are created when their rosters are imported; include a non-empty `password` column in each CSV.
+Passwords may be any non-empty value up to 1024 characters for roster accounts.
+The bundled demo rosters do not include passwords; set `$env:DEMO_ROSTER_PASSWORD` to a non-empty value before
+running the demo seeder to add credentials to those imported accounts.
+
+Passwords are stored as salted scrypt hashes in the SQLite credentials database at
+`backend/data/auth.sqlite3` by default (override with `AUTH_DB_PATH`). The credential table is initialized
+automatically, with a safe migration for the `active` column. Credentials are separate from the in-memory timetable
+data. Passwords and hashes are not returned by the API. Re-importing an existing account reactivates it without
+changing its password; clearing a Student or Teacher roster deactivates those accounts.
+
+After successful sign-in, the API returns a signed JWT bearer token that expires after one hour. The frontend sends
+it with authenticated API requests, and the backend enforces role and identity permissions. Students and Teachers
+cannot change or reset passwords. Only an authenticated Admin can change the Admin password; the sign-in page shows
+that option only while the Admin role is selected. The new Admin password must be at least 8 characters.
+
+`JWT_SECRET` is required to start the backend and must be at least 32 bytes. Keep its value private and stable across
+restarts; changing it invalidates existing tokens. PowerShell environment variables last only for the current terminal,
+so save the generated JWT secret privately and set the same value again in each new backend terminal.
+`ADMIN_SETUP_TOKEN` is optional for normal backend use and sign-in, but must be configured with at least 32 bytes to
+enable Admin password changes. Generate the values in the backend PowerShell terminal using the commands above.
+To display the current setup token in that terminal, run
+`$env:ADMIN_SETUP_TOKEN`; to copy it without displaying it, run
+`Set-Clipboard -Value $env:ADMIN_SETUP_TOKEN`. Keep it private and enter it in the Admin password-change form.
+The setup token is accepted only for the Admin password operation and does not grant general administrative access.
+`Remove-Item Env:ADMIN_SETUP_TOKEN` removes the value from that terminal session, but does not remove it from an
+already-running backend process. Configure a token before starting the backend if you need to enable password changes.
 
 ---
 
@@ -256,7 +310,7 @@ Full table: [`context.md` §10](context.md).
 ## Known limitations
 
 - **In-memory data:** a backend restart wipes everything except saved-run JSON snapshots; re-import data afterwards.
-- **No real authentication:** the role header is trusted, student/teacher endpoints are unprotected, CORS is open. Local prototype only.
+- **CORS is open** (`allow_origins=["*"]`), consistent with the local prototype setup.
 - **Solves take minutes** on the full department; short time limits give worse results or no result. The progress bar is a timer.
 - **Blocked slots are minimised, not guaranteed zero** (the UI reports the count and whether it is the proven minimum).
 - **Traditional mode** ignores student preferences during allocation, and a few divisions/electives exceed nominal capacity (generation warnings).

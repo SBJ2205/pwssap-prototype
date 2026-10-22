@@ -1,6 +1,7 @@
-"""Teacher roster: CSV import (admin-only) and read-only listing/
-capability lookups (any role for listing, admin for the detailed
-capability views — mirrors api/subjects.py and api/students.py).
+"""Teacher roster: CSV import, listing, and detailed capability lookups.
+
+Roster listing and imports are admin-only; teachers may access their own
+timetable and assigned class rosters.
 
 CSV parsing lives in ingestion/teachers_csv.py; this module only handles
 HTTP framing and talks to the store.
@@ -12,6 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 
 from api.deps import require_admin
+from auth import create_credentials, deactivate_credentials
 from data.store import InMemoryStore, get_store
 from domain.enums import RunStatus
 from domain.timeslots import get_meeting_times
@@ -33,6 +35,7 @@ def list_teachers(store: InMemoryStore = Depends(get_store)):
 def clear_teacher_roster(store: InMemoryStore = Depends(get_store)):
     """Clear teachers and schedules generated with their assignments."""
     cleared_count = store.clear_teachers()
+    deactivate_credentials("teacher")
     return {"status": "cleared", "cleared_count": cleared_count}
 
 
@@ -75,7 +78,7 @@ async def import_teachers(file: UploadFile = File(...), store: InMemoryStore = D
         raise HTTPException(status_code=400, detail="CSV file must be UTF-8 encoded.")
 
     known_subject_codes = {s.subject_code for s in store.list_subjects()}
-    result = parse_teachers_csv(text, known_subject_codes)
+    result = parse_teachers_csv(text, known_subject_codes, require_password=True)
     if not result.is_valid:
         raise HTTPException(status_code=400, detail={
             "status": "rejected",
@@ -83,6 +86,7 @@ async def import_teachers(file: UploadFile = File(...), store: InMemoryStore = D
             "row_errors": [{"row": e.row_number, "errors": e.errors} for e in result.row_errors],
         })
 
+    create_credentials("teacher", result.passwords)
     for teacher in result.teachers:
         store.upsert_teacher(teacher)
     for teacher_id, subject_codes in result.capabilities.items():

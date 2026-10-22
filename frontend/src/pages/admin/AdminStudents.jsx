@@ -167,8 +167,9 @@ export default function AdminStudents({
       <InfoBox title="Department Student Roster">
         Student CSV import accepts students belonging to any active semester in the department with columns:{" "}
         <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>
-          roll_number, name, semester
+          roll_number, name, semester, password
         </code>.
+        Each password is required; passwords are hashed before storage and cannot be changed after import.
         Elective courses are locked in directly by students via their portal based on defined subtags rather than numeric CSV columns.
       </InfoBox>
 
@@ -182,7 +183,7 @@ export default function AdminStudents({
             <div style={{ fontSize: 12, color: "#777" }}>
               Expected columns:{" "}
               <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>
-                roll_number, name, semester
+                roll_number, name, semester, password
               </code>
             </div>
           </div>

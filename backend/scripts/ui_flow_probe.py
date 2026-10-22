@@ -16,6 +16,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import statistics
 import sys
 import threading
@@ -30,7 +31,20 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def mk(base, timeout=600):
-    return httpx.Client(base_url=base, headers={"X-Role": "admin"}, timeout=timeout)
+    api_client = httpx.Client(base_url=base, timeout=timeout)
+    login = api_client.post(
+        "/auth/login",
+        json={
+            "role": "admin",
+            "identity": "admin",
+            "password": os.environ.get(
+                "ADMIN_PASSWORD", os.environ.get("ADMIN_DEFAULT_PASSWORD", "admin")
+            ),
+        },
+    )
+    login.raise_for_status()
+    api_client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+    return api_client
 
 
 def pct(vals, p):

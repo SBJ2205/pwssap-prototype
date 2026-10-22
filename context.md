@@ -15,8 +15,9 @@
 2. **Use the numbers in Section 14 exactly**, with their conditions. They are measured, machine-specific,
    and some vary run to run (CP-SAT under a time limit). Never round a number *up* in a flattering direction.
 3. **Respect Section 21 ("Claims you can and cannot make").** In particular: the solver is *constraint
-   programming (CP-SAT)*, **not machine learning**; there is **no real authentication**; data is
-   **in-memory** (a backend restart wipes it); the app has **not** been deployed or user-tested.
+   programming (CP-SAT)*, **not machine learning**; authentication now uses JWT and role/identity authorization;
+   scheduling data is **in-memory** (a backend restart wipes it), while password hashes persist in SQLite; the app has
+   **not** been deployed or user-tested.
 4. **Terminology.** "Blocked slot" = a student's hard-sounding "never schedule me here" token, which is
    implemented as a *minimised soft* constraint (Section 7.4). Do not describe it as an absolute guarantee.
 5. **Privacy.** The demo CSVs contain what look like **real student and faculty names** (and the HOD's name).
@@ -129,41 +130,48 @@ solver 2.1k, data 0.6k, ingestion 0.4k); helper scripts ≈ 0.9k; tests ≈ **5.
 ```mermaid
 flowchart TB
   subgraph FE["Frontend (React 19 + Vite)"]
-    A1["Entry screen (role by ID)"] --> A2["Admin portal (9 pages)"]
+    A1["Entry screen (role + ID + password)"] --> A2["Admin portal (9 pages)"]
     A1 --> A3["Student portal (4 pages)"]
     A1 --> A4["Teacher portal (1 page)"]
     A5["api/*.js (Axios clients)"]
   end
   subgraph BE["Backend (FastAPI)"]
-    B1["api/ routers (68 endpoints)"]
+    B1["api/ routers (70 endpoints)"]
     B2["domain/ (rules, validation, section generation, cohorts, saved runs)"]
     B3["ingestion/ (CSV parsers)"]
     B4["solver/ (service.py orchestration, engine.py CP-SAT, gap_reduction.py)"]
     B5["data/store.py (InMemoryStore)"]
+    B6["auth.py (SQLite credentials, JWT, role checks)"]
     B1 --> B2 & B3 & B4
     B2 --> B5
     B4 --> B5
   end
-  A5 -- "REST/JSON, X-Role header" --> B1
+  A5 -- "REST/JSON, bearer JWT" --> B1
+  B1 --> B6
   B2 -. "JSON snapshots" .-> D[("backend/data/saved_runs/*.json")]
   B4 --> OR["OR-Tools CP-SAT"]
 ```
 
 Design principles stated in the code: persistence-agnostic domain dataclasses; `engine.py` is store-agnostic
-(testable in isolation); `service.py` is the only store-aware solver layer; `api/` is thin HTTP framing;
-the store is the one place a future database would plug in (`get_store()`).
+(testable in isolation); `service.py` is the only store-aware solver layer; `api/` is thin HTTP framing.
+Timetable domain data remains in `InMemoryStore`; credentials are separately persisted in SQLite.
 
-### 5.2 Roles and "authentication" (honest description)
-- Login screen accepts **`admin`**, a **student roll number**, or a **teacher ID**. No password.
-- The frontend sends `X-Role: admin|student|teacher`; the backend only enforces `X-Role: admin` (or `?role=admin`)
-  on admin routes via `require_admin`. Student/teacher endpoints take the roll number / teacher ID in the URL and
-  are **not protected** (any caller can read or edit any student's preferences).
-- CORS is `allow_origins=["*"]`. Treat the whole thing as a **local prototype**.
+### 5.2 Authentication and roles
+- Sign-in requires a selected role, account ID, and password. The initial Admin identity/password is `admin` / `admin`.
+- The backend verifies scrypt password hashes in SQLite and issues one-hour HS256 JWTs. The API rejects missing, invalid,
+  tampered, and expired tokens; `X-Role` is not trusted.
+- Admin-only APIs require an Admin token. Students can access their own preference, lock-in, and timetable endpoints;
+  Teachers can access their own timetable and class rosters. Roster listing is Admin-only.
+- The Admin password can be changed only with an Admin JWT and the configured `ADMIN_SETUP_TOKEN`; that setup token is
+  scoped only to the Admin password endpoint. Students and Teachers have no password-change/reset API.
+- CORS remains `allow_origins=["*"]`. Treat the whole thing as a **local prototype**.
 
 ### 5.3 State and persistence
 - `InMemoryStore` holds: subjects, teachers + capabilities + per-subject weekly load caps, teacher availability,
   students, elective selections, student time/faculty preferences, sections, runs, student→section assignments
   (**global**: one live timetable at a time), cached solve results, cohort configs, traditional plans.
+- SQLite `auth_users` stores role, identity, scrypt password hash, and active state; it persists independently from
+  timetable data. Set `JWT_SECRET`, `ADMIN_SETUP_TOKEN`, optional `ADMIN_DEFAULT_PASSWORD`, and optional `AUTH_DB_PATH`.
 - The store is **not** generally thread-safe; only the **single-solve lock** is (Section 7.9).
 - **Saved runs** (JSON in `backend/data/saved_runs/`, git-ignored): a snapshot is **auto-saved after every solve**,
   can be re-labelled/saved explicitly, listed, compared, activated (restores sections, assignments, diagnostics,
@@ -379,10 +387,10 @@ Required: `subject_code, subject_name, subject_tag, semester, type, weekly_hours
 Aliases: `name→subject_name`, `tag→subject_tag`, `hours→weekly_hours`, `linked_pattern→slot_structure`. **All-or-nothing**: any row error rejects the whole file with row-level messages. Duplicate codes rejected.
 
 ### 9.2 Teachers CSV (`teachers.csv`)
-`teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, …` (ragged rows allowed; blank cells skipped). A code without a load (or vice-versa) is an error; loads must be positive integers; unknown subject codes rejected; subjects must be imported first.
+`teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, …, password` (ragged rows allowed; blank capability cells skipped). The final password column is required and must be non-empty. A code without a load (or vice-versa) is an error; loads must be positive integers; unknown subject codes rejected; subjects must be imported first. Credentials are hashed and stored in SQLite.
 
 ### 9.3 Students CSV (`students.csv`)
-Required: `roll_number, name, semester` (header whitespace stripped; duplicates rejected). The UI offers a CSV template download (`students_template.csv`).
+Required: `roll_number, name, semester, password`; passwords must be non-empty (header whitespace stripped; duplicate identities rejected). The UI offers a CSV template download (`students_template.csv`). Credentials are hashed and stored in SQLite.
 
 ### 9.4 Elective allocations CSV (`sem4_electives.csv`, `sem6_electives.csv`)
 `roll_number`, optional `student_name`, plus **one column per choice tag** (e.g. `MDM`, `PE`) with the subtag value. Lines starting with `#` are ignored; subtag matching is case-insensitive; per-row errors are returned. A template can be generated from the server (`/admin/cycle/elective-template/{semester}`).
@@ -413,12 +421,14 @@ Student preference profiles are *synthetic*, ("stacked, opinionated" — 2,849 P
 
 ---
 
-## 10. API reference (68 endpoints; 49 admin-only, 19 public)
+## 10. API reference (70 endpoints)
 
-Base URL `http://localhost:8000`; interactive docs at `/docs`. Admin routes need header `X-Role: admin`.
+Base URL `http://localhost:8000`; interactive docs at `/docs`. Only `GET /health` and `POST /auth/login` are public.
+All other APIs require a bearer JWT and are role/identity scoped.
 
 | Group | Endpoints |
 |---|---|
+| Authentication | `POST /auth/login`, `POST /auth/admin-password` |
 | Meta | `GET /health`, `GET /timeslots`, `GET /semesters` |
 | Subjects | `GET /subjects`; admin: `POST /admin/subjects/import`, `DELETE /admin/subjects`, `GET /admin/subjects/tags`, `GET /admin/subjects/choice-groups`, `GET /admin/subjects/{code}/teachers` |
 | Teachers | `GET /teachers`; admin: `POST /admin/teachers/import`, `DELETE /admin/teachers`, `GET /admin/teachers/{id}/capabilities`; `GET /teachers/{id}/timetable[.csv]`, `GET /teachers/{id}/sections/{sid}/roster.csv` |
@@ -584,11 +594,13 @@ Command: `python backend/scripts/run_traditional_probe.py --time-limit 120`
 | Timetable correctness (earlier probe) | 0 student clashes, 0 teacher overlaps, 466/466 non-empty student timetables |
 | UI rendering/lag with all sections | **Not measured in a browser** — don't claim |
 
-### 14.5 Test & build status (2026-10-18)
+### 14.5 Test & build status (baseline 2026-10-18)
 - Backend: **191 passed, 2 skipped** (the two skips are opt-in slow full-department tests, `RUN_SLOW=1`). Normal run ≈ 10–14 s.
 - The two opt-in full-department tests were also run on 2026-10-18 and **both pass** (≈ 187 s together).
 - Frontend: `vite build` succeeds (chunk-size warning only); `cohortsLogic.check.mjs` passes; ESLint reports **14 problems in 2 files** (pre-existing style issues such as empty `catch` blocks — be honest if asked).
 - Regression tests were **mutation-checked** (re-introducing the Tolerable bug and the hard-block bug makes them fail).
+- Authentication change verification (2026-10-22): 23 focused authentication and Student/Teacher CSV tests pass;
+  the older API integration tests still use `X-Role` and password-less roster fixtures and need migration.
 
 ### 14.6 Reproduce everything
 ```bash
@@ -602,7 +614,11 @@ CP-SAT under a time limit is **not bit-for-bit repeatable**; expect small variat
 ---
 
 ## 15. Testing strategy (for the report)
-- **191 automated tests** across: CSV parsers (subjects, teachers, students, electives), validation rules (preferences, quota, faculty), domain (grid), section generation (incl. 3-hour subjects), solver engine (tiny instances: feasibility, availability, load balance, infeasibility), **solver regression** (cohort blocks covering all slots, honest objective, Tolerable counting, Pass A/B behaviour, portfolio selection/early-stop/cancel), gap reduction, API phases 2–11 (HTTP-level via TestClient), run lifecycle (409 guard, hidden placeholders, regeneration cleanup), saved runs, traditional cohorts & engine hooks, and opt-in **full-department** tests (466 students).
+- Baseline automated tests covered CSV parsers, validation, domain/grid, section generation, solver regression, gap reduction,
+  API phases 2–11, run lifecycle, saved runs, traditional cohorts/engine hooks, and opt-in full-department tests.
+- The new authentication tests cover JWT validation, role/identity scoping, SQLite hash persistence, roster imports, and
+  the Admin setup-token flow. Legacy HTTP tests still require conversion from caller-supplied `X-Role` to JWTs and their
+  student/teacher import CSV fixtures need passwords.
 - Styles: pytest functions and "check()" scripts that exit non-zero on failure (they fail at collection); script-style files can also be run via `python -m tests.<name>`.
 - Helper scripts (not tests): `seed_via_api.py` (loads the demo set through the real REST API), `ui_flow_probe.py` (replays the admin flow and measures latency, clashes, concurrency guard), `run_stress_test.py`, `run_traditional_probe.py`.
 - Gap to admit: **no automated browser/UI tests**; UI verified manually and by build/lint.
@@ -610,12 +626,12 @@ CP-SAT under a time limit is **not bit-for-bit repeatable**; expect small variat
 ---
 
 ## 16. Design decisions to mention ("product decisions" referenced in code comments, #1–#16)
-Department-only scope (#1); odd/even semester split (#2); choice tags per run/cycle (#3); fixed Mon–Fri × 4-slot grid with reserved Mon-1 and lab-only slot 4 (#4); sections linked patterns & parallel labs (#6); teacher CSV capabilities/loads, no preferred slots for teachers (#8); teacher availability = **hard** (#9); student time preference with Blocked (#10); faculty preference secondary & soft, never outweighs time preference (#11); objective priority: time > faculty > load balance (#12); **auto-publish after solving** (#13); lightweight role model, no real auth (#14); timetable views carry full slot details (#15); separation of concerns — generation/solver logic store-agnostic (#16).
+Department-only scope (#1); odd/even semester split (#2); choice tags per run/cycle (#3); fixed Mon–Fri × 4-slot grid with reserved Mon-1 and lab-only slot 4 (#4); sections linked patterns & parallel labs (#6); teacher CSV capabilities/loads, no preferred slots for teachers (#8); teacher availability = **hard** (#9); student time preference with Blocked (#10); faculty preference secondary & soft, never outweighs time preference (#11); objective priority: time > faculty > load balance (#12); **auto-publish after solving** (#13); role-based JWT authorization (#14); timetable views carry full slot details (#15); separation of concerns — generation/solver logic store-agnostic (#16).
 
 ---
 
 ## 17. Security, privacy and ethics notes
-- No authentication; any caller can read/modify student data by roll number; CORS wide open. Intended for a local/department-network prototype only.
+- JWT and role/identity authorization are implemented. `JWT_SECRET` and `ADMIN_SETUP_TOKEN` must be configured securely; CORS remains wide open. Intended for a local/department-network prototype only.
 - Demo data appear to contain real names → anonymise in public material; `demo_run/` and saved-run JSONs are git-ignored.
 - Fairness angle worth a sentence: the blocked quota prevents a few students from dominating the schedule; the satisfaction score and cohort average make outcomes visible; students are told when a blocked slot was unavoidable.
 
@@ -623,7 +639,7 @@ Department-only scope (#1); odd/even semester split (#2); choice tags per run/cy
 
 ## 18. Limitations and known issues (be upfront — judges respect honesty)
 1. **In-memory store** — restart loses data (only saved-run JSON survives; people/subject data must be re-imported).
-2. **No real auth**; unprotected student/teacher endpoints.
+2. **Scheduling data remains in-memory**; only credentials persist in SQLite. Student/Teacher dashboards need the roster re-imported after a backend restart.
 3. **Solve time:** a full-department solve needs minutes (recommend ≥ 180 s single candidate; ≥ 240–300 s for 3 candidates). Short limits give worse results or `UNKNOWN`.
 4. **Stage 1 is never proven optimal** on the full dataset; overall status is normally `FEASIBLE`. Results vary run to run.
 5. **Blocked slots are minimised, not guaranteed zero**; the system reports the count and whether it is the proven minimum.
@@ -635,7 +651,7 @@ Department-only scope (#1); odd/even semester split (#2); choice tags per run/cy
 11. Per-student "faculty rating" check in the objective skips only *Preferred* (penalty 0) — harmless but noted.
 
 ### Future work (suggested)
-Persistent database + migrations; real authentication (SSO/JWT) and per-role authorisation; real-time solver progress (WebSocket/SSE) and background job queue; rooms/venues and capacity; Stage-1 awareness of student blocks for single-section electives (the main source of the remaining blocked placements); incremental re-solve after small changes; mobile-friendly UI; automated browser tests; deployment (Docker/CI).
+Persisting timetable and preference data; SSO; real-time solver progress (WebSocket/SSE) and background job queue; rooms/venues and capacity; Stage-1 awareness of student blocks for single-section electives (the main source of the remaining blocked placements); incremental re-solve after small changes; mobile-friendly UI; automated browser tests; deployment (Docker/CI).
 
 ---
 

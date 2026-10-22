@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { getStudents, getTeachers } from "../api/catalog";
-import { setRole as setApiRole } from "../api/client";
-import { apiErrorMessage } from "../api/client";
+import { authenticate, changeAdminPassword } from "../api/auth";
+import { apiErrorMessage, setToken } from "../api/client";
 
 const INPUT_STYLE = {
   width: "100%",
@@ -18,67 +17,81 @@ const INPUT_STYLE = {
 };
 
 export default function EntryScreen({ onLogin }) {
+  const [role, setRole] = useState("student");
   const [value, setValue] = useState("");
+  const [password, setPassword] = useState("");
+  const [changingAdminPassword, setChangingAdminPassword] = useState(false);
+  const [currentAdminPassword, setCurrentAdminPassword] = useState("");
+  const [setupToken, setSetupToken] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
+  const [confirmAdminPassword, setConfirmAdminPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
     const input = value.trim();
-    if (!input) return;
+    if (!input || !password) return;
 
     setLoading(true);
     setError(null);
+    setSuccess(null);
 
     try {
-      // Admin special keyword.
-      if (input.toLowerCase() === "admin") {
-        setApiRole("admin");
-        onLogin("admin", "admin", "Administrator");
-        return;
-      }
-
-      // Try to match a student roll number.
-      setApiRole("student");
-      let students;
-      try {
-        students = await getStudents();
-      } catch {
-        students = [];
-      }
-      const student = students.find(
-        s => s.roll_number.toLowerCase() === input.toLowerCase()
-      );
-      if (student) {
-        onLogin("student", student.roll_number, student.name);
-        return;
-      }
-
-      // Try to match a teacher ID.
-      setApiRole("admin"); // teachers endpoint doesn't need admin but we need X-Role set
-      let teachers;
-      try {
-        teachers = await getTeachers();
-      } catch {
-        teachers = [];
-      }
-      const teacher = teachers.find(
-        t => t.teacher_id.toLowerCase() === input.toLowerCase()
-      );
-      if (teacher) {
-        setApiRole("teacher");
-        onLogin("teacher", teacher.teacher_id, teacher.teacher_name);
-        return;
-      }
-
-      setError(
-        `"${input}" was not recognised. Enter "admin", a student roll number (e.g. 23101C0006), or a teacher ID (e.g. T001).`
-      );
+      const auth = await authenticate(role, input, password);
+      await onLogin(auth);
     } catch (err) {
       setError(apiErrorMessage(err) || "Could not connect to the server.");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleAdminPasswordChange(event) {
+    event.preventDefault();
+    setError(null);
+    setSuccess(null);
+    if (newAdminPassword !== confirmAdminPassword) {
+      setError("The new passwords do not match.");
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const adminSession = await authenticate("admin", "admin", currentAdminPassword);
+      setToken(adminSession.access_token);
+      await changeAdminPassword(newAdminPassword, setupToken);
+      setCurrentAdminPassword("");
+      setSetupToken("");
+      setNewAdminPassword("");
+      setConfirmAdminPassword("");
+      setPassword("");
+      setSuccess("Admin password updated. Sign in with your new password.");
+    } catch (err) {
+      setError(apiErrorMessage(err) || "Could not update the Admin password.");
+    } finally {
+      setToken(null);
+      setChangingPassword(false);
+    }
+  }
+
+  function toggleAdminPasswordChange() {
+    setChangingAdminPassword(value => !value);
+    setError(null);
+    setSuccess(null);
+  }
+
+  function handleRoleChange(event) {
+    setRole(event.target.value);
+    setChangingAdminPassword(false);
+    setCurrentAdminPassword("");
+    setSetupToken("");
+    setNewAdminPassword("");
+    setConfirmAdminPassword("");
+    setError(null);
+    setSuccess(null);
   }
 
   return (
@@ -129,22 +142,42 @@ export default function EntryScreen({ onLogin }) {
         {/* Form */}
         <form onSubmit={handleSubmit} style={{ padding: "28px 32px" }}>
           <label style={{ display: "block", fontWeight: 600, fontSize: 14, color: "#333", marginBottom: 8 }}>
-            Who are you?
+            Sign in
           </label>
+          <select
+            value={role}
+            onChange={handleRoleChange}
+            style={{ ...INPUT_STYLE, marginBottom: 12 }}
+            disabled={loading}
+          >
+            <option value="admin">Admin</option>
+            <option value="student">Student</option>
+            <option value="teacher">Teacher</option>
+          </select>
           <input
             autoFocus
             type="text"
             value={value}
             onChange={e => { setValue(e.target.value); setError(null); }}
-            placeholder="admin · roll number · teacher ID"
+            placeholder={role === "admin" ? "admin" : role === "student" ? "Roll number" : "Teacher ID"}
             style={INPUT_STYLE}
             disabled={loading}
           />
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={e => { setPassword(e.target.value); setError(null); }}
+            placeholder="Password"
+            style={{ ...INPUT_STYLE, marginTop: 12 }}
+            disabled={loading}
+          />
           <div style={{ fontSize: 11, color: "#aaa", marginTop: 7, lineHeight: 1.6 }}>
-            Enter <code style={{ background: "#f1efe8", padding: "1px 5px", borderRadius: 3 }}>admin</code> for the admin panel,
-            your roll number (e.g.{" "}
+            Sign in with your role, account ID, and password. The initial Admin account is
+            <code style={{ background: "#f1efe8", padding: "1px 5px", borderRadius: 3, marginLeft: 4 }}>admin</code>.
+            Students use their roll number (e.g.{" "}
             <code style={{ background: "#f1efe8", padding: "1px 5px", borderRadius: 3 }}>23101C0006</code>) for the student view,
-            or a teacher ID (e.g.{" "}
+            and Teachers use their ID (e.g.{" "}
             <code style={{ background: "#f1efe8", padding: "1px 5px", borderRadius: 3 }}>T001</code>) for the teacher view.
           </div>
 
@@ -163,27 +196,131 @@ export default function EntryScreen({ onLogin }) {
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={loading || !value.trim()}
-            style={{
-              marginTop: 20,
-              width: "100%",
-              padding: "12px 0",
-              background: loading || !value.trim() ? "#c5c3bb" : "#185FA5",
-              color: "#fff",
-              border: "none",
-              borderRadius: 10,
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: loading || !value.trim() ? "not-allowed" : "pointer",
-              fontFamily: "inherit",
-              transition: "background 0.15s",
-            }}
-          >
-            {loading ? "Checking…" : "Continue →"}
-          </button>
+          {success && (
+            <div role="status" style={{
+              marginTop: 14,
+              background: "#E5F5EF",
+              border: "1px solid #b7e4d3",
+              borderRadius: 8,
+              padding: "10px 14px",
+              fontSize: 12,
+              color: "#166534",
+            }}>
+              {success}
+            </div>
+          )}
+
+          {!changingAdminPassword && (
+            <button
+              type="submit"
+              disabled={loading || !value.trim() || !password}
+              style={{
+                marginTop: 20,
+                width: "100%",
+                padding: "12px 0",
+                background: loading || !value.trim() || !password ? "#c5c3bb" : "#185FA5",
+                color: "#fff",
+                border: "none",
+                borderRadius: 10,
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: loading || !value.trim() || !password ? "not-allowed" : "pointer",
+                fontFamily: "inherit",
+                transition: "background 0.15s",
+              }}
+            >
+              {loading ? "Signing in…" : "Sign in"}
+            </button>
+          )}
         </form>
+
+        {role === "admin" && (
+          <div style={{ padding: "0 32px 20px" }}>
+            <button
+              type="button"
+              onClick={toggleAdminPasswordChange}
+              style={{
+                padding: 0,
+                border: 0,
+                background: "transparent",
+                color: "#185FA5",
+                fontSize: 12,
+                cursor: "pointer",
+                textDecoration: "underline",
+              }}
+            >
+              {changingAdminPassword ? "Back to sign in" : "Change Admin password"}
+            </button>
+            {changingAdminPassword && (
+              <form onSubmit={handleAdminPasswordChange} style={{ display: "grid", gap: 10, marginTop: 16 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: "#333" }}>Change Admin password</div>
+              <div style={{ fontSize: 11, color: "#777", lineHeight: 1.5 }}>
+                Verify the current Admin password and enter the configured setup token.
+              </div>
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={currentAdminPassword}
+                onChange={event => setCurrentAdminPassword(event.target.value)}
+                placeholder="Current Admin password"
+                style={INPUT_STYLE}
+                disabled={changingPassword}
+              />
+              <input
+                type="password"
+                autoComplete="off"
+                required
+                value={setupToken}
+                onChange={event => setSetupToken(event.target.value)}
+                placeholder="Admin setup token"
+                style={INPUT_STYLE}
+                disabled={changingPassword}
+              />
+              <input
+                type="password"
+                autoComplete="new-password"
+                minLength={8}
+                required
+                value={newAdminPassword}
+                onChange={event => setNewAdminPassword(event.target.value)}
+                placeholder="New password (at least 8 characters)"
+                style={INPUT_STYLE}
+                disabled={changingPassword}
+              />
+              <input
+                type="password"
+                autoComplete="new-password"
+                minLength={8}
+                required
+                value={confirmAdminPassword}
+                onChange={event => setConfirmAdminPassword(event.target.value)}
+                placeholder="Confirm new password"
+                style={INPUT_STYLE}
+                disabled={changingPassword}
+              />
+              <button
+                type="submit"
+                disabled={changingPassword || !currentAdminPassword || !setupToken || newAdminPassword.length < 8 || !confirmAdminPassword}
+                style={{
+                  width: "100%",
+                  padding: "12px 0",
+                  background: changingPassword || !currentAdminPassword || !setupToken || newAdminPassword.length < 8 || !confirmAdminPassword ? "#c5c3bb" : "#185FA5",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 10,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: changingPassword || !currentAdminPassword || !setupToken || newAdminPassword.length < 8 || !confirmAdminPassword ? "not-allowed" : "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {changingPassword ? "Updating…" : "Update Admin password"}
+              </button>
+              </form>
+            )}
+          </div>
+        )}
 
         {/* Role hints */}
         <div style={{

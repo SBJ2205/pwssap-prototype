@@ -19,7 +19,7 @@ Admin-only routes (product decision #14):
   PUT /admin/sections/{section_id}/capacity
       Override the section's capacity ceiling.
 
-Student-facing route (no admin role required — product decision #14):
+Student-facing route (JWT-authenticated for the matching student identity — product decision #14):
   GET /students/{roll_number}/sections
       Return the student's section assignments and the full timetable
       detail for each (used by Phase 11 student timetable view).
@@ -488,4 +488,3 @@ def _compute_student_stats(student, timetable: list, store: InMemoryStore) -> di
         },
         "perks": perks,
     }
-

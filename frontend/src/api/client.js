@@ -6,12 +6,28 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
 export const client = axios.create({ baseURL: API_BASE_URL });
 
-// Minimal local-prototype role concept (see backend/api/deps.py). No real
-// auth — every request just carries whatever role the caller set,
-// and the backend enforces it on admin-only routes.
-export function setRole(role) {
-  client.defaults.headers.common["X-Role"] = role;
+let accessToken = null;
+
+export function setToken(token) {
+  accessToken = token;
+  if (token) client.defaults.headers.common.Authorization = `Bearer ${token}`;
+  else delete client.defaults.headers.common.Authorization;
 }
+
+client.interceptors.request.use(config => {
+  if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`;
+  return config;
+});
+
+client.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response?.status === 401 && !error.config?.url?.includes("/auth/login")) {
+      window.dispatchEvent(new Event("pwssap:unauthorized"));
+    }
+    return Promise.reject(error);
+  },
+);
 
 // Extract a human-readable error message from an axios error.
 export function apiErrorMessage(err) {

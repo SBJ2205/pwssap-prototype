@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from api.deps import require_admin
+from auth import create_credentials, deactivate_credentials
 from data.store import InMemoryStore, get_store
 from domain.models import StudentChoiceSelection
 from domain.validation import validate_lock_in
@@ -45,6 +46,7 @@ def list_students(semester: Optional[int] = None, store: InMemoryStore = Depends
 def clear_student_roster(store: InMemoryStore = Depends(get_store)):
     """Clear the roster and schedules generated from it."""
     cleared_count = store.clear_students()
+    deactivate_credentials("student")
     return {"status": "cleared", "cleared_count": cleared_count}
 
 
@@ -65,7 +67,7 @@ async def import_students(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="CSV file must be UTF-8 encoded.")
 
-    result = parse_students_csv(text)
+    result = parse_students_csv(text, require_password=True)
     if not result.is_valid:
         raise HTTPException(status_code=400, detail={
             "status": "rejected",
@@ -73,6 +75,7 @@ async def import_students(
             "row_errors": [{"row": e.row_number, "errors": e.errors} for e in result.row_errors],
         })
 
+    create_credentials("student", result.passwords)
     for student in result.students:
         store.upsert_student(student)
 

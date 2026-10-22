@@ -1,7 +1,7 @@
 """Student time-slot preference submission (product decision #10).
 
-Not admin-managed — a student submits their own preferences here (no
-real auth in this local prototype; see product decision #14). Validation
+Not admin-managed — a JWT-authenticated student submits their own
+preferences here (see product decision #14). Validation
 follows the "warn, don't silently accept useless data" rule: a payload
 can be rejected outright if it's degenerate enough to make scheduling
 nearly impossible (e.g. almost the whole week blocked), or accepted with

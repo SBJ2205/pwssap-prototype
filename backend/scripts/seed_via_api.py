@@ -19,6 +19,8 @@ Re-runnable: by default it clears subjects/teachers/students first.
 """
 
 import argparse
+import csv
+import io
 import os
 import random
 import sys
@@ -51,9 +53,40 @@ def fail(msg: str, resp: httpx.Response | None = None):
     sys.exit(1)
 
 
-def upload(client: httpx.Client, path: str, csv_name: str, extra: dict | None = None):
+def upload(
+    client: httpx.Client,
+    path: str,
+    csv_name: str,
+    extra: dict | None = None,
+    roster_password: str | None = None,
+):
     with open(os.path.join(DEMO_DIR, csv_name), "rb") as f:
-        r = client.post(path, files={"file": (csv_name, f, "text/csv")}, data=extra or {})
+        content = f.read()
+    if roster_password:
+        decoded = content.decode("utf-8-sig")
+        rows = list(csv.reader(io.StringIO(decoded)))
+        if rows:
+            header = [column.strip().lower() for column in rows[0]]
+            if "password" in header:
+                password_index = header.index("password")
+                for row in rows[1:]:
+                    if any(cell.strip() for cell in row):
+                        while len(row) <= password_index:
+                            row.append("")
+                        if not row[password_index].strip():
+                            row[password_index] = roster_password
+            else:
+                rows[0].append("password")
+                for row in rows[1:]:
+                    row.append(roster_password if any(cell.strip() for cell in row) else "")
+            output = io.StringIO()
+            csv.writer(output, lineterminator="\n").writerows(rows)
+            content = output.getvalue().encode("utf-8")
+    r = client.post(
+        path,
+        files={"file": (csv_name, content, "text/csv")},
+        data=extra or {},
+    )
     if r.status_code != 200:
         fail(f"upload of {csv_name} to {path} failed", r)
     return r.json()
@@ -194,14 +227,30 @@ def main():
     ap.add_argument("--no-clear", action="store_true")
     ap.add_argument("--seed", default="1337")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument(
+        "--roster-password",
+        default=os.environ.get("DEMO_ROSTER_PASSWORD"),
+        help="Password to add to demo roster CSVs when they do not contain one (or set DEMO_ROSTER_PASSWORD).",
+    )
     args = ap.parse_args()
 
-    client = httpx.Client(base_url=args.base_url, headers={"X-Role": "admin"}, timeout=60)
+    client = httpx.Client(base_url=args.base_url, timeout=60)
     t0 = time.monotonic()
     try:
         client.get("/health").raise_for_status()
     except Exception as exc:
         fail(f"backend not reachable at {args.base_url}: {exc}")
+
+    admin_password = os.environ.get(
+        "ADMIN_PASSWORD", os.environ.get("ADMIN_DEFAULT_PASSWORD", "admin")
+    )
+    login = client.post(
+        "/auth/login",
+        json={"role": "admin", "identity": "admin", "password": admin_password},
+    )
+    if login.status_code != 200:
+        fail("Admin login failed", login)
+    client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
 
     if not args.no_clear:
         print("[0/5] Clearing existing students / teachers / subjects ...")
@@ -211,9 +260,9 @@ def main():
     print("[1/5] Importing CSVs ...")
     r = upload(client, "/admin/subjects/import", "subjects.csv")
     print("  subjects:", {k: v for k, v in r.items() if k in ("count", "status")})
-    r = upload(client, "/admin/teachers/import", "teachers.csv")
+    r = upload(client, "/admin/teachers/import", "teachers.csv", roster_password=args.roster_password)
     print("  teachers:", {k: v for k, v in r.items() if k in ("count", "capabilities", "status")})
-    r = upload(client, "/admin/students/import", "students.csv")
+    r = upload(client, "/admin/students/import", "students.csv", roster_password=args.roster_password)
     print("  students:", {k: v for k, v in r.items() if k in ("count", "status")})
 
     print("[2/5] Configuring choice tags + elective lock-ins ...")

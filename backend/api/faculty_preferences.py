@@ -6,8 +6,8 @@ outweigh time-slot preference. Only subjects with 2+ eligible teachers
 are rankable; there is no "Blocked" concept here since this is never a
 hard constraint, unlike time-slot preference's Blocked rating.
 
-Not admin-managed — a student submits their own preferences (no real
-auth in this local prototype, product decision #14).
+Not admin-managed — a JWT-authenticated student submits their own
+preferences (product decision #14).
 """
 from typing import Dict
 

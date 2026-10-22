@@ -62,26 +62,25 @@ IT310,Cyber Security Intro,MDM,IT310_CS,3,theory,3,30,
 IT311,Probabilistic Graphical Models,PE1,AIML|DS,5,theory,4,72,
 `;
 
-export const TEACHER_CSV_TEMPLATE = `teacher_id,teacher_name,subject_1,subject_1_load,subject_2,subject_2_load,subject_3,subject_3_load,subject_4,subject_4_load
-T001,Dr. A. Sharma,IT301,6,IT302,4,IT303,4,IT304,2
-T002,Prof. B. Verma,IT301,4,IT305,6,IT306,4,IT307,4
-T003,Dr. C. Iyer,IT302,4,IT305,4,IT308,4,IT309,3
-T004,Prof. D. Kulkarni,IT303,4,IT304,2,IT306,4,IT310,3
-T005,Dr. E. Deshmukh,IT307,4,IT308,4,IT309,3,IT310,3
+export const TEACHER_CSV_TEMPLATE = `teacher_id,teacher_name,subject_1,subject_1_load,subject_2,subject_2_load,subject_3,subject_3_load,subject_4,subject_4_load,password
+T001,Dr. A. Sharma,IT301,6,IT302,4,IT303,4,IT304,2,
+T002,Prof. B. Verma,IT301,4,IT305,6,IT306,4,IT307,4,
+T003,Dr. C. Iyer,IT302,4,IT305,4,IT308,4,IT309,3,
+T004,Prof. D. Kulkarni,IT303,4,IT304,2,IT306,4,IT310,3,
+T005,Dr. E. Deshmukh,IT307,4,IT308,4,IT309,3,IT310,3,
 `;
 
-export const STUDENT_CSV_TEMPLATE = `roll_number,name,semester
-23101C0001,Aarav Patil,3
-23101C0002,Diya Shah,3
-23101C0003,Rohan Joshi,5
+export const STUDENT_CSV_TEMPLATE = `roll_number,name,semester,password
+23101C0001,Aarav Patil,3,
+23101C0002,Diya Shah,3,
+23101C0003,Rohan Joshi,5,
 `;
 
 export function generateStudentCsvTemplate(semester = 3) {
   const sem = typeof semester === "object" ? (semester?.semester || 3) : (semester || 3);
-  return `roll_number,name,semester
-23101C0001,Aarav Patil,${sem}
-23101C0002,Diya Shah,${sem}
-23101C0003,Rohan Joshi,${sem}
+  return `roll_number,name,semester,password
+23101C0001,Aarav Patil,${sem},
+23101C0002,Diya Shah,${sem},
+23101C0003,Rohan Joshi,${sem},
 `;
 }
-

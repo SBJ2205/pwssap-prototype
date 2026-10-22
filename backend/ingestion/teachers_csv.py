@@ -36,6 +36,7 @@ class RowError:
 @dataclass
 class TeacherCsvResult:
     teachers: List[Teacher] = field(default_factory=list)
+    passwords: Dict[str, str] = field(default_factory=dict)
     capabilities: Dict[str, List[str]] = field(default_factory=dict)  # teacher_id -> [subject_code, ...]
     loads: Dict[str, Dict[str, int]] = field(default_factory=dict)  # teacher_id -> subject_code -> max hours
     row_errors: List[RowError] = field(default_factory=list)
@@ -46,7 +47,9 @@ class TeacherCsvResult:
 
 
 def parse_teachers_csv(
-    content: str, known_subject_codes: Optional[Set[str]] = None
+    content: str,
+    known_subject_codes: Optional[Set[str]] = None,
+    require_password: bool = False,
 ) -> TeacherCsvResult:
     """known_subject_codes: if provided, every referenced subject_code
     must exist in it or the row is rejected (Phase 2's subject import
@@ -62,10 +65,16 @@ def parse_teachers_csv(
         return TeacherCsvResult(row_errors=[RowError(row_number=0, errors=[
             "First two columns must be teacher_id, teacher_name."
         ])])
+    password_columns = [index for index, name in enumerate(header) if name == "password"]
+    if len(password_columns) > 1 or (require_password and len(password_columns) != 1):
+        return TeacherCsvResult(row_errors=[RowError(row_number=0, errors=[
+            "A single password column is required."
+        ])])
 
     teachers: List[Teacher] = []
     capabilities: Dict[str, List[str]] = {}
     loads: Dict[str, Dict[str, int]] = {}
+    passwords: Dict[str, str] = {}
     row_errors: List[RowError] = []
     seen_ids: Dict[str, int] = {}
 
@@ -78,12 +87,22 @@ def parse_teachers_csv(
         teacher_name = row[1].strip() if len(row) > 1 else ""
         subject_cells = row[2:]
         header_cells = header[2:]
+        password_index = password_columns[0] if password_columns else None
+        password = row[password_index].strip() if password_index is not None and password_index < len(row) else ""
+        if require_password and not password:
+            errors.append("password is required.")
+        if len(password) > 1024:
+            errors.append("password must not exceed 1024 characters.")
         parsed_pairs: List[tuple[str, Optional[int]]] = []
         pair_format = any(cell.endswith("_load") for cell in header_cells)
 
         if pair_format:
             for index, cell in enumerate(subject_cells):
-                if index >= len(header_cells) or header_cells[index].endswith("_load"):
+                if (
+                    index >= len(header_cells)
+                    or header_cells[index].endswith("_load")
+                    or header_cells[index] == "password"
+                ):
                     continue
                 code = cell.strip()
                 load_index = index + 1
@@ -106,13 +125,18 @@ def parse_teachers_csv(
                     continue
                 parsed_pairs.append((code, load))
         else:
-            parsed_pairs = [(c.strip(), None) for c in subject_cells if c.strip()]
+            parsed_pairs = [
+                (cell.strip(), None)
+                for index, cell in enumerate(subject_cells)
+                if cell.strip() and (index >= len(header_cells) or header_cells[index] != "password")
+            ]
 
         subject_codes = [code for code, _ in parsed_pairs]
 
-        if teacher_id and teacher_id in seen_ids:
+        normalized_teacher_id = teacher_id.casefold()
+        if teacher_id and normalized_teacher_id in seen_ids:
             errors.append(
-                f"Duplicate teacher_id '{teacher_id}' (first seen on row {seen_ids[teacher_id]})."
+                f"Duplicate teacher_id '{teacher_id}' (first seen on row {seen_ids[normalized_teacher_id]})."
             )
 
         deduped_codes: List[str] = []
@@ -137,9 +161,17 @@ def parse_teachers_csv(
             row_errors.append(RowError(row_number=row_number, errors=errors))
             continue
 
-        seen_ids[teacher_id] = row_number
+        seen_ids[normalized_teacher_id] = row_number
         teachers.append(teacher)
+        if password:
+            passwords[teacher_id] = password
         capabilities[teacher_id] = deduped_codes
         loads[teacher_id] = teacher_loads
 
-    return TeacherCsvResult(teachers=teachers, capabilities=capabilities, loads=loads, row_errors=row_errors)
+    return TeacherCsvResult(
+        teachers=teachers,
+        passwords=passwords,
+        capabilities=capabilities,
+        loads=loads,
+        row_errors=row_errors,
+    )

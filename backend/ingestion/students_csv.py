@@ -22,6 +22,7 @@ class RowError:
 @dataclass
 class StudentCsvResult:
     students: List[Student] = field(default_factory=list)
+    passwords: Dict[str, str] = field(default_factory=dict)
     choice_selections: Dict[str, List[StudentChoiceSelection]] = field(default_factory=dict)
     row_errors: List[RowError] = field(default_factory=list)
 
@@ -30,14 +31,19 @@ class StudentCsvResult:
         return len(self.row_errors) == 0
 
 
-def parse_students_csv(content: str, run: Optional[GenerationRun] = None) -> StudentCsvResult:
-    """Parse a student CSV containing roll_number, name, semester."""
+def parse_students_csv(
+    content: str, run: Optional[GenerationRun] = None, require_password: bool = False
+) -> StudentCsvResult:
+    """Parse a student roster, optionally requiring login credentials."""
     reader = csv.DictReader(io.StringIO(content))
-    header = reader.fieldnames or []
+    header = [h.strip() for h in (reader.fieldnames or [])]
+    reader.fieldnames = header
 
     # Strip header whitespace
     header = [h.strip() for h in header]
     required = ["roll_number", "name", "semester"]
+    if require_password:
+        required.append("password")
     missing = [c for c in required if c not in header]
     if missing:
         return StudentCsvResult(row_errors=[RowError(row_number=0, errors=[
@@ -45,6 +51,7 @@ def parse_students_csv(content: str, run: Optional[GenerationRun] = None) -> Stu
         ])])
 
     students: List[Student] = []
+    passwords: Dict[str, str] = {}
     row_errors: List[RowError] = []
     seen_rolls: Dict[str, int] = {}
 
@@ -55,11 +62,16 @@ def parse_students_csv(content: str, run: Optional[GenerationRun] = None) -> Stu
         roll_number = row.get("roll_number", "")
         name = row.get("name", "")
         raw_semester = row.get("semester", "")
+        password = row.get("password", "")
 
         if not roll_number:
             errors.append("roll_number is required.")
         if not name:
             errors.append("name is required.")
+        if require_password and not password:
+            errors.append("password is required.")
+        if len(password) > 1024:
+            errors.append("password must not exceed 1024 characters.")
 
         semester = None
         if not raw_semester:
@@ -71,12 +83,13 @@ def parse_students_csv(content: str, run: Optional[GenerationRun] = None) -> Stu
                 errors.append(f"semester '{raw_semester}' is not a whole number.")
 
         if roll_number:
-            if roll_number in seen_rolls:
+            normalized_roll = roll_number.casefold()
+            if normalized_roll in seen_rolls:
                 errors.append(
-                    f"Duplicate roll_number '{roll_number}' (first seen on row {seen_rolls[roll_number]})."
+                    f"Duplicate roll_number '{roll_number}' (first seen on row {seen_rolls[normalized_roll]})."
                 )
             else:
-                seen_rolls[roll_number] = row_number
+                seen_rolls[normalized_roll] = row_number
 
         if errors:
             row_errors.append(RowError(row_number=row_number, errors=errors))
@@ -90,5 +103,7 @@ def parse_students_csv(content: str, run: Optional[GenerationRun] = None) -> Stu
             continue
 
         students.append(student)
+        if password:
+            passwords[roll_number] = password
 
-    return StudentCsvResult(students=students, row_errors=row_errors)
+    return StudentCsvResult(students=students, passwords=passwords, row_errors=row_errors)

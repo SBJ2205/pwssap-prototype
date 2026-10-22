@@ -157,6 +157,9 @@ export default function AdminTeachers({ reload, setPage }) {
         The teacher CSV uses a flexible format: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name</code>,
         followed by <strong>subject codes</strong> in subsequent cells (e.g. <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>T001, Dr. Sharma, IT301, IT302</code>).
         <br />
+        The final <code>password</code> column is required for each teacher.
+        Passwords are hashed before storage and cannot be changed after import.
+        <br />
         <strong>Prerequisite:</strong> Referenced subject codes must already exist in the Subject Catalog.
         Upload subjects first before importing teachers.
       </InfoBox>
@@ -177,7 +180,7 @@ export default function AdminTeachers({ reload, setPage }) {
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>Import Teachers via CSV</div>
             <div style={{ fontSize: 12, color: "#777" }}>
-              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name, subject_1, subject_1_load, subject_2, subject_2_load, ...</code>
+              Columns required: <code style={{ background: "#f1efe8", padding: "1px 4px", borderRadius: 3 }}>teacher_id, teacher_name, subject_1, subject_1_load, ..., password</code>
             </div>
           </div>
 

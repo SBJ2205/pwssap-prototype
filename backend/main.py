@@ -10,8 +10,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import ALL_ROUTERS, api_router
+from auth import authenticate_request
 
 app = FastAPI(title="PWSSAP")
+app.middleware("http")(authenticate_request)
 
 app.add_middleware(
     CORSMiddleware,

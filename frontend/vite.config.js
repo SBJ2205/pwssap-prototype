@@ -10,6 +10,7 @@ export default defineConfig({
       '.trycloudflare.com'
     ],
     proxy: {
+      '/auth': 'http://localhost:8000',
       '/admin': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
       '/semesters': 'http://localhost:8000',
