@@ -106,10 +106,16 @@ def _get_cycle_status_dict(store: InMemoryStore) -> Dict[str, Any]:
                 "is_complete": len(sem_stus) > 0 and len(complete_stus) == len(sem_stus),
             })
 
-    # Find the current (latest) generation run
+    # Find the current (active or latest) generation run
     latest_run = None
+    from domain.saved_runs import ensure_active_run_loaded
+    ensure_active_run_loaded(store)
     if store.runs:
-        latest_run_obj = max(store.runs.values(), key=lambda r: r.id)
+        active_id = getattr(store, "active_run_id", None)
+        if active_id is not None and active_id in store.runs:
+            latest_run_obj = store.runs[active_id]
+        else:
+            latest_run_obj = max(store.runs.values(), key=lambda r: r.id)
         latest_run = {
             "id": latest_run_obj.id,
             "semesters": latest_run_obj.semesters,

@@ -89,6 +89,21 @@ def test_uniform_rating_with_too_few_slots_does_not_warn():
     assert result.warnings == []
 
 
+def test_blocked_exceeding_max_allowed_blocks_is_rejected():
+    keys = list(RATABLE_KEYS)
+    ratings = {keys[0]: BLOCKED, keys[1]: BLOCKED}
+    result = validate_time_slot_preferences(ratings, RATABLE_KEYS, max_allowed_blocks=1)
+    assert not result.is_valid
+    assert any("allowed a maximum of" in e for e in result.errors)
+
+
+def test_blocked_within_max_allowed_blocks_is_accepted():
+    keys = list(RATABLE_KEYS)
+    ratings = {keys[0]: BLOCKED}
+    result = validate_time_slot_preferences(ratings, RATABLE_KEYS, max_allowed_blocks=1)
+    assert result.is_valid
+
+
 def _run_all():
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_")]
     failures = 0

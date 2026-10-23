@@ -14,7 +14,13 @@ export const getTimePrefs = (rollNumber) =>
         preferences[item.slot_key] = item.rating;
       }
     }
-    return { roll_number: rollNumber, preferences, raw: list };
+    return {
+      roll_number: rollNumber,
+      preferences,
+      raw: list,
+      max_allowed_blocks: list[0]?.max_allowed_blocks ?? 1,
+      enrolled_count: list[0]?.enrolled_count ?? 14,
+    };
   });
 
 // PUT /students/{roll}/time-preferences

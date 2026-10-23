@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
+from domain.enums import RunStatus
 from domain.timeslots import get_meeting_times
 from ingestion.teachers_csv import parse_teachers_csv
 
@@ -143,12 +144,26 @@ def get_teacher_timetable(
             "end_time": end_t,
         }
 
-    # Find all sections assigned to this teacher (optionally run-scoped).
-    all_sections = (
-        store.list_sections_for_run(run_id)
-        if run_id is not None
-        else list(store.sections.values())
-    )
+    # Resolve which run to show. Without ?run_id the latest SOLVED/PUBLISHED
+    # run is used, so stale or unsolved runs never leak into a teacher's view.
+    # An unsolved (draft) run only holds placeholder teachers/slots: show none.
+    solved_statuses = (RunStatus.SOLVED, RunStatus.PUBLISHED)
+    if run_id is None:
+        from domain.saved_runs import ensure_active_run_loaded
+        ensure_active_run_loaded(store)
+        active_id = getattr(store, "active_run_id", None)
+        if active_id is not None and active_id in store.runs and store.runs[active_id].status in solved_statuses:
+            resolved_run = store.runs[active_id]
+        else:
+            solved_runs = [r for r in store.list_runs() if r.status in solved_statuses]
+            resolved_run = max(solved_runs, key=lambda r: r.id) if solved_runs else None
+    else:
+        resolved_run = store.get_run(run_id)
+        if resolved_run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+    run_solved = resolved_run is not None and resolved_run.status in solved_statuses
+
+    all_sections = store.list_sections_for_run(resolved_run.id) if run_solved else []
     assigned_sections = [s for s in all_sections if s.teacher_id == teacher_id]
 
     schedule = []
@@ -184,6 +199,9 @@ def get_teacher_timetable(
     return {
         "teacher_id": teacher_id,
         "teacher_name": teacher.teacher_name,
+        "run_id": resolved_run.id if resolved_run else None,
+        "run_status": resolved_run.status.value if resolved_run else None,
+        "solved": run_solved,
         "section_count": len(schedule),
         "schedule": schedule,
     }

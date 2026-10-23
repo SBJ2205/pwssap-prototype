@@ -10,6 +10,13 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
   const { identity: teacherId } = session;
 
   const [selectedRunId, setSelectedRunId] = useState(activeRunId ?? null);
+
+  useEffect(() => {
+    if (activeRunId != null) {
+      setSelectedRunId(activeRunId);
+    }
+  }, [activeRunId]);
+
   const [timetable, setTimetable] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -184,15 +191,29 @@ export default function TeacherTimetable({ session, activeRunId, runs = [] }) {
       {/* Timetable Print Styles */}
       <style>{`
         @media print {
-          .no-print, header, nav, .sidebar {
+          @page {
+            size: landscape;
+            margin: 8mm 10mm;
+          }
+          .no-print, .app-sidebar, .sidebar, header, nav, button {
             display: none !important;
           }
-          body {
+          body, html, #root, .app-container, .app-main {
             background: #fff !important;
             color: #000 !important;
+            height: auto !important;
+            overflow: visible !important;
+            width: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            display: block !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
           .printable-timetable-area {
             display: block !important;
+            width: 100% !important;
+            overflow: visible !important;
           }
         }
       `}</style>

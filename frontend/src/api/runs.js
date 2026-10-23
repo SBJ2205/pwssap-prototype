@@ -38,10 +38,23 @@ export const getSections = (runId, subjectCode) => {
 // POST /admin/runs/{id}/solve  →  {status, sections: [...], warnings: [...]}
 // status: "OPTIMAL" | "FEASIBLE" | "INFEASIBLE"
 // After a successful solve the run transitions to PUBLISHED automatically.
-export const runSolve = (runId, timeLimit) => {
-  const params = timeLimit != null ? { time_limit: timeLimit } : {};
-  return client.post(`/admin/runs/${runId}/solve`, null, { params }).then(r => r.data);
+export const runSolve = (runId, timeLimit, candidates, signal) => {
+  const params = {
+    ...(timeLimit != null ? { time_limit: timeLimit } : {}),
+    ...(candidates != null ? { candidates } : {}),
+  };
+  return client.post(`/admin/runs/${runId}/solve`, null, { params, signal }).then(r => r.data);
 };
+
+export const getSolveResult = (runId) =>
+  client.get(`/admin/runs/${runId}/solve-result`).then(r => r.data);
+
+// GET /admin/runs/solve/status → {active: bool, run_id?, kind?, elapsed_seconds?}
+export const getSolveStatus = () =>
+  client.get("/admin/runs/solve/status").then(r => r.data);
+
+export const cancelSolve = (runId) =>
+  client.post(`/admin/runs/${runId}/cancel`).then(r => r.data);
 
 // POST /admin/runs/{id}/feasibility — hard constraints only, no publication.
 export const checkFeasibility = (runId, timeLimit) => {
@@ -76,3 +89,20 @@ export const downloadTeacherTimetableCsv = (teacherId, runId) => {
     responseType: "blob",
   }).then(r => r.data);
 };
+
+// ── Saved Timetables & Comparison ─────────────────────────────────────────
+export const listSavedRuns = () =>
+  client.get("/admin/runs/saved").then(r => r.data);
+
+export const saveRunSnapshot = (runId, label) =>
+  client.post(`/admin/runs/${runId}/save-snapshot`, { label }).then(r => r.data);
+
+export const activateSavedRun = (snapshotId) =>
+  client.post(`/admin/runs/saved/${snapshotId}/activate`).then(r => r.data);
+
+export const compareRuns = (runA, runB) =>
+  client.get("/admin/runs/compare", { params: { run_a: runA, run_b: runB } }).then(r => r.data);
+
+export const deleteSavedRun = (snapshotId) =>
+  client.delete(`/admin/runs/saved/${snapshotId}`).then(r => r.data);
+

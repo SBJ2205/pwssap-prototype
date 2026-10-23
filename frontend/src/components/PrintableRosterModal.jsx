@@ -58,24 +58,71 @@ export default function PrintableRosterModal({
       {/* Print Stylesheet */}
       <style>{`
         @media print {
-          body * {
-            visibility: hidden;
+          @page {
+            size: portrait;
+            margin: 10mm 12mm;
           }
-          #printable-roster-content, #printable-roster-content * {
-            visibility: visible;
+          .no-print, .app-sidebar, .sidebar, header, nav, button, .printable-timetable-area {
+            display: none !important;
           }
-          #printable-roster-content {
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-            margin: 0;
-            padding: 16px;
+          body, html, #root, .app-container, .app-main {
             background: #fff !important;
             color: #000 !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
+            display: block !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
-          .no-print {
-            display: none !important;
+          .roster-modal-overlay {
+            position: static !important;
+            display: block !important;
+            background: transparent !important;
+            backdrop-filter: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
+            height: auto !important;
+            overflow: visible !important;
+            box-shadow: none !important;
+            inset: auto !important;
+            z-index: auto !important;
+          }
+          .roster-modal-dialog {
+            background: transparent !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            max-width: 100% !important;
+            width: 100% !important;
+            max-height: none !important;
+            height: auto !important;
+            overflow: visible !important;
+            display: block !important;
+            padding: 0 !important;
+            margin: 0 !important;
+          }
+          .roster-modal-body {
+            padding: 0 !important;
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+            display: block !important;
+            background: #fff !important;
+          }
+          #printable-roster-content {
+            display: block !important;
+            position: static !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            color: #000 !important;
+            overflow: visible !important;
           }
           table {
             border-collapse: collapse !important;
@@ -84,17 +131,19 @@ export default function PrintableRosterModal({
           th, td {
             border: 1px solid #333 !important;
             padding: 6px 8px !important;
-            font-size: 11pt !important;
+            font-size: 10pt !important;
+            color: #000 !important;
           }
           tr {
             page-break-inside: avoid;
+            break-inside: avoid;
           }
         }
       `}</style>
 
       {/* Modal Overlay */}
       <div
-        className="no-print"
+        className="roster-modal-overlay"
         style={{
           position: "fixed",
           inset: 0,
@@ -108,6 +157,7 @@ export default function PrintableRosterModal({
         }}
       >
         <div
+          className="roster-modal-dialog"
           style={{
             background: "#fff",
             borderRadius: 12,
@@ -239,7 +289,7 @@ export default function PrintableRosterModal({
           </div>
 
           {/* Printable Document Body */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "24px", background: "#fff" }}>
+          <div className="roster-modal-body" style={{ flex: 1, overflowY: "auto", padding: "24px", background: "#fff" }}>
             <div id="printable-roster-content">
               {/* Official Academic Header */}
               <div style={{ borderBottom: "2px solid #0f172a", paddingBottom: 12, marginBottom: 16 }}>

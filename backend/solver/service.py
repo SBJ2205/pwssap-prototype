@@ -15,6 +15,7 @@ from data.store import InMemoryStore
 from domain.enums import RunStatus, SubjectType
 from domain.models import Meeting, Section
 from domain.timeslots import TimeSlot
+from domain.traditional_plan import finalize_traditional_run, solver_overrides_for_run
 from solver.engine import SolverInput, SolverResult, solve
 
 
@@ -30,6 +31,7 @@ def run_solver_for_run(
     store: InMemoryStore,
     time_limit_seconds: float = 30.0,
     feasibility_only: bool = False,
+    candidate_count: int = 1,
 ) -> SolverResult:
     """Orchestrate the full solve cycle for one generation run.
 
@@ -235,7 +237,12 @@ def run_solver_for_run(
         subject_subtags=subject_subtags,
         feasibility_only=feasibility_only,
         time_limit_seconds=time_limit_seconds,
+        candidate_count=candidate_count,
+        cancel_check=lambda: run_id in store.cancel_requested_runs,
     )
+    # Traditional (division/batch) runs only; an empty dict for every other run.
+    for _field, _value in solver_overrides_for_run(store, run_id).items():
+        setattr(inp, _field, _value)
 
     result = solve(inp)
     if pre_warnings:
@@ -244,6 +251,7 @@ def run_solver_for_run(
     if result.status in ("OPTIMAL", "FEASIBLE"):
         _write_assignments_to_store(store, sections, result)
         run.status = RunStatus.PUBLISHED  # DRAFT -> PUBLISHED (product decision #13)
+        finalize_traditional_run(store, run, result)  # no-op unless generated in traditional mode
 
     return result
 

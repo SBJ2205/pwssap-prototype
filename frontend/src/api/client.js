@@ -1,7 +1,8 @@
 import axios from "axios";
 
-// Env-based backend URL. Falls back to localhost:8000 for local dev.
-export const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Env-based backend URL. Uses relative URL by default so Vite proxy forwards requests
+// properly whether accessed via localhost or a Cloudflare tunnel.
+export const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
 export const client = axios.create({ baseURL: API_BASE_URL });
 

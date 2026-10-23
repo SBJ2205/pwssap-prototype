@@ -73,6 +73,7 @@ export const NAV = [
   { key: "admin-subjects",     label: "Subjects",            color: "#7F77DD", group: "admin" },
   { key: "admin-teachers",     label: "Teachers",            color: "#D85A30", group: "admin" },
   { key: "admin-availability", label: "Availability",        color: "#BA7517", group: "admin" },
+  { key: "admin-cohorts",      label: "Classes & Batches",   color: "#7F77DD", group: "admin" },
   { key: "admin-solver",       label: "Solver",              color: "#1D9E75", group: "admin" },
   { key: "admin-timetable",    label: "Published Timetable", color: "#185FA5", group: "admin" },
   { key: "admin-overrides",    label: "Touch-ups",           color: "#D85A30", group: "admin" },

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getStudentTimetable } from "../../api/preferences";
 import { apiErrorMessage } from "../../api/client";
 import { DAYS, SLOT_NUMBERS, SLOT_LABELS, SLOT_SHORT, slotKey } from "../../constants";
-import { Card, EmptyState, PageHeader } from "../../components/ui";
+import { Card, EmptyState, PageHeader, Badge } from "../../components/ui";
 
 export default function StudentTimetable({ session }) {
   const { identity: rollNumber, name: sessionName } = session;
@@ -95,6 +95,7 @@ export default function StudentTimetable({ session }) {
   );
 
   const entries = timetable?.timetable || [];
+  const stats = timetable?.stats;
   const studentName = timetable?.name || sessionName || "Student";
 
   if (entries.length === 0) {
@@ -180,7 +181,7 @@ export default function StudentTimetable({ session }) {
               Department of Information Technology — Student Timetable
             </div>
             <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
-              Academic Year 2025–26 · Semester {timetable.semester}
+              Academic Year 2026–27 · Semester {timetable.semester}
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -204,7 +205,7 @@ export default function StudentTimetable({ session }) {
       }}>
         <PageHeader
           title="My Timetable"
-          sub={`Signed in as ${studentName} · Roll No: ${rollNumber} · Semester ${timetable.semester} · AY 2025–26`}
+          sub={`Signed in as ${studentName} · Roll No: ${rollNumber} · Semester ${timetable.semester} · AY 2026–27`}
         />
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -252,6 +253,137 @@ export default function StudentTimetable({ session }) {
           </button>
         </div>
       </div>
+
+      {/* Schedule Quality & Satisfaction Overview Card (Screen only) */}
+      {stats && (
+        <div className="no-print" style={{ marginBottom: 16 }}>
+          {/* Blocked Slot Override Apology Banner */}
+          {stats.blocked_overrides && stats.blocked_overrides.length > 0 && (
+            <div style={{
+              background: "#FFFBEB",
+              border: "1px solid #FCD34D",
+              borderRadius: 10,
+              padding: "14px 18px",
+              marginBottom: 14,
+              boxShadow: "0 1px 3px rgba(245, 158, 11, 0.08)",
+            }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 22, lineHeight: 1 }}>⚠️</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "#92400E", marginBottom: 4 }}>
+                    Schedule Notice: Unavoidable Blocked Slot Placement
+                  </div>
+                  <div style={{ fontSize: 12, color: "#78350F", lineHeight: 1.5 }}>
+                    {stats.blocked_overrides.map((ov, idx) => (
+                      <div key={idx} style={{ marginBottom: 6 }}>
+                        <div>
+                          • <strong>{ov.subject_name} ({ov.subject_code})</strong>: scheduled on <strong>{ov.day} {ov.start_time}–{ov.end_time}</strong> ({ov.slot_key}).
+                        </div>
+                        <div style={{ paddingLeft: 12, fontSize: 11, color: "#92400e", opacity: 0.95, marginTop: 1 }}>
+                          ↳ <em>{ov.reason || (ov.is_single_section ? "Single-section course: no alternative time slots exist." : "Parallel sections conflicted with your other enrolled classes or were at capacity.")}</em>
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 8, fontStyle: "italic", color: "#92400e" }}>
+                      This placement was mathematically necessary to ensure a complete, clash-free enrollment for your semester. We sincerely apologize for the scheduling inconvenience.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Preference Match & Satisfaction Metrics */}
+          <div style={{
+            background: "#fff",
+            border: "1px solid #e5e3dc",
+            borderRadius: 10,
+            padding: "16px 20px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#1e293b", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>🎯 Schedule Quality & Preference Match</span>
+                  {stats.satisfaction_score >= stats.cohort_average_satisfaction ? (
+                    <Badge color="green">Above Cohort Average</Badge>
+                  ) : (
+                    <Badge color="blue">Optimized Alignment</Badge>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                  Your personalized schedule satisfaction based on your submitted time and faculty preferences.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: stats.satisfaction_score >= 80 ? "#166534" : "#1e40af" }}>
+                    {stats.satisfaction_score}%
+                  </div>
+                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 500 }}>
+                    Satisfaction Score
+                  </div>
+                </div>
+                <div style={{ height: 32, width: 1, background: "#e2e8f0" }} />
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#475569" }}>
+                    {stats.cohort_average_satisfaction}%
+                  </div>
+                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 500 }}>
+                    Cohort Average
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Breakdown Chips & Highlights */}
+            {stats.breakdown && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#475569" }}>Slot Breakdown:</span>
+                <span style={{ fontSize: 11, padding: "2px 8px", background: "#ecfdf5", color: "#065f46", borderRadius: 12, fontWeight: 600 }}>
+                  🟢 {stats.breakdown.preferred} Preferred
+                </span>
+                <span style={{ fontSize: 11, padding: "2px 8px", background: "#fefce8", color: "#854d0e", borderRadius: 12, fontWeight: 600 }}>
+                  🟡 {stats.breakdown.tolerable} Tolerable
+                </span>
+                {stats.breakdown.unrated > 0 && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", background: "#f8fafc", color: "#475569", borderRadius: 12, fontWeight: 500 }}>
+                    ⚪ {stats.breakdown.unrated} Neutral
+                  </span>
+                )}
+                {stats.breakdown.disliked > 0 && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", background: "#fff7ed", color: "#9a3412", borderRadius: 12, fontWeight: 600 }}>
+                    🟠 {stats.breakdown.disliked} Disliked
+                  </span>
+                )}
+                {stats.breakdown.blocked > 0 && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", background: "#fef2f2", color: "#991b1b", borderRadius: 12, fontWeight: 600 }}>
+                    🔴 {stats.breakdown.blocked} Overridden Blocked
+                  </span>
+                )}
+
+                {stats.faculty_match && stats.faculty_match.total_rated_subjects > 0 && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", background: "#eff6ff", color: "#1e40af", borderRadius: 12, fontWeight: 600, marginLeft: "auto" }}>
+                    👨‍🏫 Top Faculty: {stats.faculty_match.top_choice_matches} of {stats.faculty_match.total_rated_subjects} courses
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Perks badges */}
+            {stats.perks && stats.perks.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {stats.perks.map((p, i) => (
+                  <span key={i} style={{ fontSize: 10, fontWeight: 600, color: "#047857", background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "1px 6px", borderRadius: 4 }}>
+                    ✓ {p}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Weekly Schedule Grid Card with Horizontal Scroll */}
       <Card>

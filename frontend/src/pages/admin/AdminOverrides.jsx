@@ -40,7 +40,7 @@ export default function AdminOverrides({
   // Audit log of session overrides
   const [overrideLogs, setOverrideLogs] = useState([]);
 
-  const effectiveRunId = cycleStatus?.current_run?.id || activeRunId || (runs.length > 0 ? runs[runs.length - 1].id : null);
+  const effectiveRunId = activeRunId || cycleStatus?.current_run?.id || (runs.length > 0 ? runs[runs.length - 1].id : null);
 
   const loadData = useCallback(async () => {
     if (!effectiveRunId) {

@@ -34,7 +34,7 @@ export default function Sidebar({ session, page, setPage, onLogout }) {
           Department Timetable System
         </div>
         <div style={{ fontSize: 10, color: "#bbb", marginTop: 1 }}>
-          VIT Mumbai · IT 2025–26
+          VIT Mumbai · INFT 2026–2027
         </div>
       </div>
 

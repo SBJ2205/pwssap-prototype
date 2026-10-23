@@ -83,6 +83,9 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
   const [isLockInRequired, setIsLockInRequired] = useState(false);
   const [saveMsg, setSaveMsg]     = useState(null);
   const [warnings, setWarnings]   = useState([]);
+  const [maxAllowedBlocks, setMaxAllowedBlocks] = useState(1);
+  const [enrolledCount, setEnrolledCount]       = useState(14);
+  const [blockLimitNotice, setBlockLimitNotice] = useState(null);
 
   // Load saved preferences on mount.
   useEffect(() => {
@@ -94,7 +97,11 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
     setIsLockInRequired(false);
     getTimePrefs(rollNumber)
       .then(data => {
-        if (!cancelled) setPrefs(data.preferences || {});
+        if (!cancelled) {
+          setPrefs(data.preferences || {});
+          if (data.max_allowed_blocks != null) setMaxAllowedBlocks(data.max_allowed_blocks);
+          if (data.enrolled_count != null) setEnrolledCount(data.enrolled_count);
+        }
       })
       .catch(e => {
         if (!cancelled) {
@@ -111,7 +118,19 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
 
   function cycleRating(key) {
     const cur = prefs[key] ?? 0;
-    const next = cur >= 4 ? 0 : cur + 1;
+    const currentBlocked = Object.entries(prefs).filter(([k, v]) => v === 4 && k !== key).length;
+    let next = cur >= 4 ? 0 : cur + 1;
+
+    // If next transition is to Blocked (4) but student already reached quota:
+    if (next === 4 && currentBlocked >= maxAllowedBlocks) {
+      next = 0; // Skip directly to Indifferent
+      setBlockLimitNotice(
+        `Quota reached: You can block at most ${maxAllowedBlocks} slot${maxAllowedBlocks > 1 ? "s" : ""} based on your ${enrolledCount} enrolled subjects (1 block per 4 free slots below 19). Resetting to Indifferent.`
+      );
+    } else {
+      setBlockLimitNotice(null);
+    }
+
     setPrefs(prev => {
       const updated = { ...prev };
       if (next === 0) delete updated[key];
@@ -130,7 +149,9 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
     const rated    = Object.keys(p).length;
     const usable   = TOTAL_RATABLE_SLOTS - blocked;
 
-    if (blocked >= TOTAL_RATABLE_SLOTS) {
+    if (blocked > maxAllowedBlocks) {
+      issues.push(`You have blocked ${blocked} slot(s), exceeding your allowed quota of ${maxAllowedBlocks} slot(s) for ${enrolledCount} enrolled subjects.`);
+    } else if (blocked >= TOTAL_RATABLE_SLOTS) {
       issues.push("You have blocked every available slot. The solver cannot assign you any class.");
     } else if (usable <= 2) {
       issues.push(`Only ${usable} unblocked slot(s) remaining. The solver may not be able to satisfy all subjects.`);
@@ -265,7 +286,7 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
             {[
               { label: "Preferred", val: preferredCount, color: "#27500A", bg: "#EAF3DE" },
               { label: "Rated total", val: ratedCount,   color: "#0C447C", bg: "#E6F1FB" },
-              { label: "Blocked",    val: blockedCount,  color: "#791F1F", bg: "#FCEBEB" },
+              { label: "Blocked quota", val: `${blockedCount} / ${maxAllowedBlocks}`, color: blockedCount >= maxAllowedBlocks ? "#BA7517" : "#791F1F", bg: blockedCount >= maxAllowedBlocks ? "#FAEEDA" : "#FCEBEB" },
               { label: "Unrated",    val: TOTAL_RATABLE_SLOTS - ratedCount, color: "#888", bg: "#f1efe8" },
             ].map(({ label, val, color, bg }) => (
               <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -282,7 +303,7 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
               { r: 1, desc: "Great time. Solver prioritises these.", penalty: "0 pts" },
               { r: 2, desc: "Acceptable but not ideal.",            penalty: "+1 pt"  },
               { r: 3, desc: "Inconvenient. Avoided where possible.", penalty: "+3 pts" },
-              { r: 4, desc: "Cannot attend. Never assigned to you.", penalty: "N/A"   },
+              { r: 4, desc: "Cannot attend. Strongly avoided with top priority.", penalty: "2,000 pts" },
             ].map(({ r, desc, penalty }) => {
               const m = RATING_META[r];
               return (
@@ -323,10 +344,46 @@ export default function StudentPrefs({ session, onNavigate, setPage }) {
         {/* Right: grid */}
         <div>
           <Card>
-            <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>Weekly Time-Slot Grid</div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 14 }}>
-              Click any cell to cycle: Indifferent → Preferred → Tolerable → Disliked → Blocked → Indifferent
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>Weekly Time-Slot Grid</div>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: blockedCount >= maxAllowedBlocks ? "#BA7517" : "#0F766E",
+                background: blockedCount >= maxAllowedBlocks ? "#FEF3C7" : "#CCFBF1",
+                padding: "2px 8px",
+                borderRadius: 12,
+              }}>
+                🛡️ Blocked: {blockedCount} / {maxAllowedBlocks} quota used
+              </div>
             </div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+              Click any cell to cycle ratings. Maximum {maxAllowedBlocks} blocked slot{maxAllowedBlocks > 1 ? "s" : ""} allowed based on {enrolledCount} enrolled subjects (1 block per 4 free slots).
+            </div>
+
+            {blockLimitNotice && (
+              <div style={{
+                background: "#FEF3C7",
+                border: "1px solid #FCD34D",
+                borderRadius: 8,
+                padding: "8px 12px",
+                fontSize: 12,
+                color: "#92400E",
+                marginBottom: 12,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}>
+                <span>⚠ {blockLimitNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => setBlockLimitNotice(null)}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#92400E", fontWeight: 700 }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
             {/* Header row */}
             <div style={{ display: "grid", gridTemplateColumns: "100px repeat(5, 1fr)", gap: 4, marginBottom: 4 }}>

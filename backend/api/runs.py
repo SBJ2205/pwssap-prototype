@@ -56,6 +56,63 @@ def _validate_and_build_configs(payload_tags: List[ChoiceTagConfigPayload]) -> L
     return configs
 
 
+class SaveSnapshotPayload(BaseModel):
+    label: Optional[str] = None
+
+
+@router.get("/saved")
+def get_saved_runs(store: InMemoryStore = Depends(get_store)):
+    """List all saved timetable runs across all semester cycles."""
+    from domain.saved_runs import list_saved_snapshots, get_active_snapshot_id
+    active_snap = get_active_snapshot_id(store)
+    return {
+        "snapshots": list_saved_snapshots(store),
+        "active_snapshot_id": active_snap,
+    }
+
+
+@router.get("/compare")
+def compare_runs(run_a: str, run_b: str, store: InMemoryStore = Depends(get_store)):
+    """Generate a side-by-side comparison between two saved run snapshots."""
+    from domain.saved_runs import compare_saved_runs
+    try:
+        return compare_saved_runs(store, run_a, run_b)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/saved/{snapshot_id}/activate")
+def activate_run(snapshot_id: str, store: InMemoryStore = Depends(get_store)):
+    """Set a saved run snapshot as the active timetable in the live portal."""
+    from domain.saved_runs import activate_saved_run
+    try:
+        return activate_saved_run(store, snapshot_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.delete("/saved/{snapshot_id}")
+def delete_run_snapshot(snapshot_id: str):
+    """Delete a saved run snapshot file."""
+    from domain.saved_runs import delete_saved_snapshot
+    if not delete_saved_snapshot(snapshot_id):
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return {"ok": True, "deleted": snapshot_id}
+
+
+@router.post("/{run_id}/save-snapshot")
+def save_snapshot_endpoint(
+    run_id: int, payload: Optional[SaveSnapshotPayload] = None, store: InMemoryStore = Depends(get_store)
+):
+    """Explicitly save or re-label a snapshot of a run."""
+    from domain.saved_runs import save_run_snapshot
+    label = payload.label if payload else None
+    res = save_run_snapshot(store, run_id, label=label)
+    if res is None:
+        raise HTTPException(status_code=400, detail=f"Failed to create snapshot for run {run_id}. Run might not exist.")
+    return {"ok": True, "snapshot": res}
+
+
 @router.get("")
 def list_runs(semester: Optional[int] = None, store: InMemoryStore = Depends(get_store)):
     return [_run_to_dict(r) for r in store.list_runs(semester)]

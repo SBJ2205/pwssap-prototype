@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import require_admin
 from data.store import InMemoryStore, get_store
+from domain.enums import RunStatus
 from domain.models import Section
 from domain.section_generation import generate_sections_for_run
 from domain.timeslots import get_meeting_times
@@ -59,16 +60,20 @@ def _section_to_dict(section: Section) -> dict:
     }
 
 
-def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
-    """Full section detail for the run summary view."""
+def _section_to_summary_dict(section: Section, store: InMemoryStore, solved: bool = True) -> dict:
+    """Full section detail for the run summary view.
+
+    Before a run is solved, a section's teacher and meeting slots are only
+    generation-time placeholders (and clash freely), so they are hidden."""
     slot_lookup = {s.key: s for s in store.list_time_slots()}
     subject = store.get_subject(section.subject_code)
-    teacher = store.get_teacher(section.teacher_id) if section.teacher_id else None
-    enrolled = store.enrolled_students_for_section(section.id)
+    teacher_id = section.teacher_id if solved else None
+    teacher = store.get_teacher(teacher_id) if teacher_id else None
+    enrolled = store.enrolled_students_for_section(section.id) if solved else []
 
     enriched_meetings = []
     for m in section.meetings:
-        sk = m.slot_key
+        sk = m.slot_key if solved else None
         slot = slot_lookup.get(sk) if sk else None
         start_t, end_t = get_meeting_times(slot, m.duration_hours, m.slot_part)
         enriched_meetings.append({
@@ -87,7 +92,7 @@ def _section_to_summary_dict(section: Section, store: InMemoryStore) -> dict:
         "subject_type": subject.type.value if subject else None,
         "semester": subject.semester if subject else None,
         "label": section.label,
-        "teacher_id": section.teacher_id,
+        "teacher_id": teacher_id,
         "teacher_name": teacher.teacher_name if teacher else None,
         "capacity": section.capacity,
         "enrolled_count": len(enrolled),
@@ -105,8 +110,18 @@ def generate_sections(run_id: int, store: InMemoryStore = Depends(get_store)):
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    # Clear previous sections for this run.
+    # Student assignments are department-wide (one live timetable), so
+    # sections left over from any OTHER run would be stale and ambiguous.
+    # Clear them too, and put every affected run back to DRAFT.
     cleared_count = store.clear_sections_for_run(run_id)
+    for other in store.list_runs():
+        if other.id != run_id and store.clear_sections_for_run(other.id):
+            other.status = RunStatus.DRAFT
+            store.latest_solve_results.pop(other.id, None)
+
+    # Regenerated sections are unsolved, whatever the run was before.
+    run.status = RunStatus.DRAFT
+    store.latest_solve_results.pop(run_id, None)
 
     # Collect all subjects for the run's semesters (or semester).
     if run.semesters:
@@ -145,9 +160,13 @@ def generate_sections(run_id: int, store: InMemoryStore = Depends(get_store)):
         for subj in subjects
     }
 
-    # Determine the next section ID to avoid collisions with existing sections.
+    # Never reuse an id that was ever handed out: a cleared section's id could
+    # otherwise be inherited by an unrelated new section.
     all_existing_ids = list(store.sections.keys())
-    section_id_start = (max(all_existing_ids) + 1) if all_existing_ids else 0
+    section_id_start = max(
+        store._next_section_id,
+        (max(all_existing_ids) + 1) if all_existing_ids else 0,
+    )
 
     result = generate_sections_for_run(
         run=run,
@@ -224,8 +243,9 @@ def get_run_summary(run_id: int, store: InMemoryStore = Depends(get_store)):
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
+    solved = run.status in (RunStatus.SOLVED, RunStatus.PUBLISHED)
     sections = store.list_sections_for_run(run_id)
-    section_dicts = [_section_to_summary_dict(s, store) for s in sections]
+    section_dicts = [_section_to_summary_dict(s, store, solved=solved) for s in sections]
 
     # Build weekly grid: day -> [section_entry].
     # Each section contributes one entry per meeting.
@@ -261,6 +281,7 @@ def get_run_summary(run_id: int, store: InMemoryStore = Depends(get_store)):
         "semester": run.semester,
         "semesters": run.semesters,
         "run_status": run.status.value,
+        "solved": solved,
         "section_count": len(sections),
         "sections": section_dicts,
         "weekly_grid": weekly_grid,

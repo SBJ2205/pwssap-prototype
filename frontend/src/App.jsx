@@ -17,6 +17,7 @@ import AdminSubjects from "./pages/admin/AdminSubjects";
 import AdminStudents from "./pages/admin/AdminStudents";
 import AdminTeachers from "./pages/admin/AdminTeachers";
 import AdminAvailability from "./pages/admin/AdminAvailability";
+import AdminCohorts from "./pages/admin/AdminCohorts";
 import AdminSolver from "./pages/admin/AdminSolver";
 import AdminTimetable from "./pages/admin/AdminTimetable";
 import AdminOverrides from "./pages/admin/AdminOverrides";
@@ -37,6 +38,7 @@ const PAGE_COMPONENTS = {
   "admin-students":     AdminStudents,
   "admin-teachers":     AdminTeachers,
   "admin-availability": AdminAvailability,
+  "admin-cohorts":      AdminCohorts,
   "admin-solver":       AdminSolver,
   "admin-timetable":    AdminTimetable,
   "admin-overrides":    AdminOverrides,
@@ -132,6 +134,10 @@ export default function App() {
     try {
       const data = await getCycleStatus();
       setCycleStatus(data);
+      if (data?.current_run?.id != null) {
+        setActiveRunIdState(data.current_run.id);
+        localStorage.setItem("pwssap_active_run_id", String(data.current_run.id));
+      }
       return data;
     } catch {
       return null;
@@ -161,7 +167,13 @@ export default function App() {
         setStudents(s);
         setTeachers(t);
         if (r) setRuns(r);
-        if (cyc) setCycleStatus(cyc);
+        if (cyc) {
+          setCycleStatus(cyc);
+          if (cyc.current_run?.id != null) {
+            setActiveRunIdState(cyc.current_run.id);
+            localStorage.setItem("pwssap_active_run_id", String(cyc.current_run.id));
+          }
+        }
 
         // Auto-resolve session.name if missing (e.g., from existing localStorage or reload)
         setSession(prev => {
@@ -232,7 +244,7 @@ export default function App() {
     setTeachers([]);
     setRuns([]);
     setCycleStatus(null);
-    setActiveRunId(null);
+    // Keep activeRunIdState preserved across identity switches so the department timetable remains active
   }
 
   // Not logged in → show entry screen.
@@ -246,7 +258,14 @@ export default function App() {
     );
   }
 
-  const activeRun = runs.find(r => r.id === activeRunIdState) || (runs.length > 0 ? runs[runs.length - 1] : null);
+  const effectiveActiveRunId = (
+    activeRunIdState != null
+      ? activeRunIdState
+      : (cycleStatus?.current_run?.id != null
+          ? cycleStatus.current_run.id
+          : (runs.length > 0 ? runs[runs.length - 1].id : null))
+  );
+  const activeRun = runs.find(r => r.id === effectiveActiveRunId) || (runs.length > 0 ? runs[runs.length - 1] : null);
 
   const PageComponent = PAGE_COMPONENTS[page] || null;
 
@@ -259,7 +278,7 @@ export default function App() {
     setPage,
     runs,
     activeRun,
-    activeRunId: activeRun?.id || null,
+    activeRunId: effectiveActiveRunId,
     setActiveRunId,
     refreshRuns,
     cycleStatus,

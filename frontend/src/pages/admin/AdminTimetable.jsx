@@ -27,7 +27,7 @@ export default function AdminTimetable({
   // Roster modal
   const [activeRosterSection, setActiveRosterSection] = useState(null);
 
-  const effectiveRunId = cycleStatus?.current_run?.id || activeRunId || (runs.length > 0 ? runs[runs.length - 1].id : null);
+  const effectiveRunId = activeRunId || cycleStatus?.current_run?.id || (runs.length > 0 ? runs[runs.length - 1].id : null);
 
   const loadSummary = useCallback(async () => {
     if (!effectiveRunId) {
@@ -140,14 +140,16 @@ export default function AdminTimetable({
 
       {loading ? (
         <Card><div style={{ padding: "30px 0", textAlign: "center", color: "#888" }}>⏳ Loading published timetable…</div></Card>
-      ) : error || !summary ? (
+      ) : error || !summary || summary.solved === false ? (
         <Card>
           <div style={{ textAlign: "center", padding: "30px 0" }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#333", marginBottom: 6 }}>
               No Published Timetable
             </div>
             <div style={{ fontSize: 13, color: "#777", marginBottom: 16 }}>
-              {error || "Run the solver to optimize and auto-publish the department timetable."}
+              {error || (summary?.solved === false
+                ? "Sections are generated but the solver hasn't produced a timetable for this run yet. Run the solver to publish one."
+                : "Run the solver to optimize and auto-publish the department timetable.")}
             </div>
             {setPage && (
               <button
