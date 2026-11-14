@@ -13,19 +13,34 @@ set "PYTHON_EXE="
 if exist "backend\venv\Scripts\python.exe" (
     set "PYTHON_EXE=backend\venv\Scripts\python.exe"
 ) else (
-    :: 2. Check for system Python
+    :: 2. Check for system Python (either 'python' or Windows 'py' launcher)
+    set "SYS_PY="
     where python >nul 2>&1
-    if %errorlevel% neq 0 (
+    if %errorlevel% equ 0 (
+        set "SYS_PY=python"
+    ) else (
+        where py >nul 2>&1
+        if %errorlevel% equ 0 (
+            set "SYS_PY=py -3"
+        )
+    )
+
+    if not defined SYS_PY (
         echo [ERROR] Python was not found on your system!
-        echo Please install Python 3.10+ from https://www.python.org or the Microsoft Store.
-        echo Make sure to check "Add Python to PATH" during installation.
+        echo.
+        echo Please install Python (3.10, 3.11, or 3.12) from:
+        echo   https://www.python.org/downloads/
+        echo.
+        echo IMPORTANT: During installation, be sure to check the box:
+        echo   "[x] Add python.exe to PATH"
         echo.
         pause
         exit /b 1
     )
     
-    echo [*] Setting up virtual environment in backend\venv...
-    python -m venv backend\venv
+    echo [*] Setting up local environment (one-time setup)...
+    echo [*] Creating virtual environment in backend\venv...
+    %SYS_PY% -m venv backend\venv
     if %errorlevel% neq 0 (
         echo [ERROR] Failed to create virtual environment.
         pause
@@ -33,14 +48,15 @@ if exist "backend\venv\Scripts\python.exe" (
     )
     set "PYTHON_EXE=backend\venv\Scripts\python.exe"
     
-    echo [*] Installing required dependencies...
+    echo [*] Installing required packages (first time only, requires internet)...
     "%PYTHON_EXE%" -m pip install --upgrade pip
     "%PYTHON_EXE%" -m pip install -r backend\requirements.txt
     if %errorlevel% neq 0 (
-        echo [ERROR] Failed to install dependencies.
+        echo [ERROR] Failed to install dependencies. Please check your internet connection.
         pause
         exit /b 1
     )
+    echo [*] Setup complete!
 )
 
 echo [*] Starting PWSSAP Timetable Application...
